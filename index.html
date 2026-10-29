@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <script type="module" src="/@vite/client"></script>
+
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Resepsionis Virtual PUPR — Holographic Echo System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <div class="logo">
+          <svg viewBox="0 0 40 40" width="36" height="36" aria-hidden="true">
+            <polygon points="20,2 38,12 38,28 20,38 2,28 2,12" fill="none" stroke="#00e5ff" stroke-width="2"/>
+            <circle cx="20" cy="20" r="6" fill="#00e5ff" opacity="0.9"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>Resepsionis Virtual PUPR</h1>
+          <p>Holographic Echo System</p>
+        </div>
+      </div>
+      <div class="status-cluster">
+        <div class="status-pill" id="statePill">
+          <span class="dot" id="stateDot"></span>
+          <span id="stateLabel">IDLE</span>
+        </div>
+        <div class="status-pill" id="micPill">
+          <span class="dot mic" id="micDot"></span>
+          <span id="micLabel">Mikrofon: Nonaktif</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="avatar-panel">
+        <div class="holo-frame">
+          <canvas id="avatarCanvas"></canvas>
+          <div class="scanline"></div>
+          <div class="holo-ring"></div>
+          <div class="particles" id="particles"></div>
+        </div>
+        <div class="speaking-indicator" id="speakingIndicator" hidden>
+          <span class="wave-bar"></span><span class="wave-bar"></span><span class="wave-bar"></span>
+          <span>Hologram sedang berbicara</span>
+        </div>
+      </section>
+
+      <section class="info-panel">
+        <div class="card">
+          <h2>Status Sistem</h2>
+          <div class="row"><span>Browser</span><span id="browserInfo">—</span></div>
+          <div class="row"><span>Pengenalan Suara</span><span id="srSupport">—</span></div>
+          <div class="row"><span>Text-to-Speech</span><span id="ttsSupport">—</span></div>
+          <div class="row"><span>Suara Indonesia</span><span id="idVoiceInfo">—</span></div>
+        </div>
+
+        <div class="card" style="display: none;">
+          <h2>Visualisasi Suara</h2>
+          <canvas id="waveCanvas" width="400" height="120"></canvas>
+        </div>
+
+        <div class="card transcript-card">
+          <h2>Teks Ucapan Hologram</h2>
+          <div class="transcript hologram" id="spokenText">—</div>
+        </div>
+
+        <div class="controls" style="display: none;">
+          <button id="btnStart" class="btn primary">Mulai Bicara</button>
+          <button id="btnStop" class="btn danger">Berhenti</button>
+          <button id="btnRepeat" class="btn secondary">Ulangi Suara</button>
+          <label class="toggle">
+            <input type="checkbox" id="autoListen" checked />
+            <span>Dengarkan Lagi Otomatis</span>
+          </label>
+        </div>
+
+        <div class="card">
+          <h2>Echo Teks (Fallback)</h2>
+          <div class="echo-row">
+            <input id="manualText" type="text" placeholder="Ketik kalimat untuk diucapkan hologram..." />
+            <button id="btnEchoText" class="btn">Echo</button>
+          </div>
+        </div>
+
+        <div class="error-box" id="errorBox" hidden></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Prototipe Simulasi — Dinas PUPR</span>
+      <span>Pengenalan suara browser dapat memerlukan koneksi internet.</span>
+    </footer>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

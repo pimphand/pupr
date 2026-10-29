@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10120f">
+  <meta name="description" content="Bicarakan teks dan lihat karakter 3D mengikuti gerakan mulutnya.">
+  <title>Ruang Suara — Text to Speech</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root{color-scheme:dark;--bg:#10120f;--panel:#171a16;--line:#292d27;--muted:#8e968a;--text:#f2f2e9;--lime:#d4f17b;--lime-dim:#26321c;--gold:#e3b77b;--sans:'DM Sans',sans-serif;--display:'Manrope',sans-serif}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 75% 20%,#25281f 0,transparent 42%),var(--bg);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased}button,textarea,select{font:inherit}button:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--lime);outline-offset:3px}.shell{max-width:1380px;margin:auto;padding:32px 48px 42px}.topbar{height:45px;display:flex;align-items:center;justify-content:space-between;margin-bottom:42px}.brand{display:flex;align-items:center;gap:11px;color:var(--text);text-decoration:none;font-family:var(--display);font-weight:800;letter-spacing:-.6px;font-size:17px}.brand-mark{display:grid;place-items:center;width:31px;height:31px;background:var(--lime);border-radius:10px;color:#171a13}.brand-mark svg{width:17px}.top-right{display:flex;gap:9px;align-items:center}.status-chip,.native-chip{display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:40px;padding:8px 12px;color:#b4bbb0;font-size:11px}.status-dot{width:7px;height:7px;background:#91c97b;border-radius:50%;box-shadow:0 0 9px #91c97b88}.hero{margin-bottom:30px}.eyebrow{color:var(--lime);font-size:10px;text-transform:uppercase;letter-spacing:2.2px;font-weight:700}.hero h1{font-family:var(--display);font-size:clamp(30px,4vw,49px);letter-spacing:-2.2px;line-height:1.12;margin:12px 0 9px;font-weight:600}.hero h1 span{color:var(--lime)}.hero p{margin:0;color:#999f94;font-size:14px;line-height:1.65}.workspace{display:grid;grid-template-columns:minmax(0,1.02fr) minmax(0,.98fr);gap:20px;align-items:stretch}.panel{background:linear-gradient(155deg,#1a1d19,#151713 70%);border:1px solid var(--line);border-radius:18px;overflow:hidden}.editor{min-height:472px;padding:23px 25px 20px;display:flex;flex-direction:column}.panel-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}.panel-title{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600}.icon-badge{display:grid;place-items:center;width:31px;height:31px;border:1px solid #30352c;border-radius:9px;color:var(--lime);background:#1e2419}.icon-badge svg{width:15px;height:15px}.format-label{font-size:10px;letter-spacing:.5px;color:#8e968a;border:1px solid #30352c;padding:5px 8px;border-radius:6px}.text-wrap{position:relative;flex:1;min-height:238px}.text-wrap textarea{width:100%;height:100%;min-height:238px;resize:vertical;border:1px solid #30342e;background:#121410;border-radius:11px;padding:16px 17px;color:#e8eade;font-size:14px;line-height:1.8;outline:none;transition:border-color .2s}.text-wrap textarea::placeholder{color:#676e63}.text-wrap textarea:focus{border-color:#566244}.counter{position:absolute;right:13px;bottom:11px;color:#727a6e;font-size:10px;background:#121410;padding:3px 5px}.controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:18px}.control label{display:block;color:#92988e;font-size:10px;margin-bottom:7px}.control select{width:100%;border:1px solid #30342e;background:#121410;color:#dfe2d7;border-radius:8px;padding:10px 10px;font-size:12px;outline:none}.range-row{display:flex;align-items:center;gap:7px;height:37px}.range-row input{width:100%;accent-color:var(--lime)}.range-value{color:#c8cec1;font-size:10px;min-width:28px;text-align:right}.actions{display:flex;align-items:center;gap:10px;margin-top:20px}.primary{height:45px;flex:1;border:0;border-radius:9px;background:var(--lime);color:#171b12;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:9px;cursor:pointer;transition:background .18s,transform .18s}.primary:hover{background:#e0f99a;transform:translateY(-1px)}.primary:disabled{opacity:.55;cursor:not-allowed;transform:none}.primary svg{width:15px;height:15px}.secondary{height:45px;width:46px;border:1px solid #30342e;border-radius:9px;background:#191c17;color:#b9bfb2;display:grid;place-items:center;cursor:pointer;transition:background .18s,color .18s}.secondary:hover{background:#242820;color:var(--text)}.secondary svg{width:16px;height:16px}.shortcut{color:#787f73;font-size:10px;white-space:nowrap}.preview{position:relative;min-height:472px;background:linear-gradient(180deg,#1a1d17,#141610);isolation:isolate}.preview::before{content:"";position:absolute;inset:0;z-index:-1;background:radial-gradient(ellipse at 51% 59%,#53603b37 0,transparent 48%),radial-gradient(ellipse at 52% 104%,#c2d28510 0,transparent 46%)}#character-canvas{position:absolute;inset:0;width:100%;height:100%;cursor:grab;touch-action:none}#character-canvas:active{cursor:grabbing}.preview-top{position:absolute;top:19px;left:19px;right:19px;display:flex;justify-content:space-between;align-items:center;pointer-events:none}.preview-top .tag{pointer-events:auto}.tag{display:inline-flex;align-items:center;gap:7px;border:1px solid #34372e;background:#171913dc;padding:7px 10px;border-radius:7px;color:#c0c5b9;font-size:10px;letter-spacing:.15px}.live-led{width:6px;height:6px;background:#d7e89f;border-radius:50%;box-shadow:0 0 8px #d7e89f77}.cam-icon{font-size:12px;color:#b8bdaf}.preview-caption{position:absolute;bottom:18px;left:20px;right:20px;display:flex;align-items:flex-end;justify-content:space-between;pointer-events:none}.character-name{font-family:var(--display);font-weight:600;font-size:15px;letter-spacing:-.2px}.character-sub{color:#939a8e;font-size:10px;margin-top:4px}.drag-hint{font-size:10px;color:#81877c}.speaking-pill{display:none;align-items:center;gap:8px;margin-top:9px;color:var(--lime);font-size:10px}.speaking-pill.active{display:flex}.wave{height:13px;display:flex;align-items:center;gap:2px}.wave i{width:2px;height:5px;background:var(--lime);border-radius:3px;animation:wave .55s ease-in-out infinite alternate}.wave i:nth-child(2){animation-delay:.1s}.wave i:nth-child(3){animation-delay:.2s}.wave i:nth-child(4){animation-delay:.08s}.wave i:nth-child(5){animation-delay:.17s}@keyframes wave{to{height:13px}}.notice{min-height:18px;margin-top:11px;font-size:11px;color:#9ca392}.notice.error{color:#f19e88}.notice.success{color:var(--lime)}.bottom-note{display:flex;justify-content:center;margin-top:20px;color:#777e73;font-size:10px;gap:8px;align-items:center}.bottom-note svg{width:13px;height:13px;color:#afbb8a}.bottom-note b{font-weight:500;color:#aab09f}.hidden-audio{display:none}@media(max-width:850px){.shell{padding:24px 24px 32px}.topbar{margin-bottom:34px}.workspace{grid-template-columns:1fr}.editor{min-height:405px}.preview{min-height:430px;grid-row:1}.hero{margin-bottom:22px}}@media(max-width:520px){.shell{padding:17px 15px 28px}.topbar{margin-bottom:30px}.native-chip{display:none}.hero h1{letter-spacing:-1.4px}.hero p{font-size:12px}.preview{min-height:350px}.editor{padding:18px 16px;min-height:405px}.controls{gap:7px}.control select{font-size:11px;padding:10px 6px}.shortcut{display:none}.actions{gap:8px}.text-wrap textarea{font-size:13px}.bottom-note{text-align:center;font-size:9px}}
+  </style>
+  <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"}}</script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Ruang Suara"><span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M12 3v18M7 7v10M17 7v10M3 10v4m18-4v4"/></svg></span>ruang<span style="color:#d4f17b;margin-left:-9px">suara</span></a>
+      <div class="top-right"><span class="native-chip">Web Speech API</span><span class="status-chip"><span class="status-dot"></span>Sistem siap</span></div>
+    </header>
+    <section class="hero"><div class="eyebrow">Studio suara · 01</div><h1>Biarkan karakter<br><span>berbicara.</span></h1><p>Tulis sesuatu. Karakter ini akan mengucapkannya, mengikuti setiap kata.</p></section>
+    <section class="workspace" aria-label="Studio text to speech">
+      <article class="panel preview" aria-label="Pratinjau karakter 3D">
+        <canvas id="character-canvas" aria-label="Karakter 3D, seret untuk memutar pandangan"></canvas>
+        <div class="preview-top"><span class="tag"><i class="live-led"></i><span id="model-state">MEMUAT KARAKTER 3D</span></span><span class="tag"><span class="cam-icon">◉</span> 3D preview · prosedural</span></div>
+        <div class="preview-caption"><div><div class="character-name">Sahabat Suara</div><div class="character-sub">Karakter 3D siap menyampaikan pesan Anda</div><div class="speaking-pill" id="speaking"><span class="wave"><i></i><i></i><i></i><i></i><i></i></span>Sedang berbicara</div></div><span class="drag-hint">SERET UNTUK MEMUTAR</span></div>
+      </article>
+      <article class="panel editor">
+        <div class="panel-heading"><div class="panel-title"><span class="icon-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M8 7v10m8-10v10M4 10v4m16-4v4"/></svg></span>Teks yang akan diucapkan</div><span class="format-label">TEXT → SPEECH</span></div>
+        <div class="text-wrap"><textarea id="text" maxlength="1000" placeholder="Ketik teks di sini…&#10;Contoh: Selamat datang, ada yang bisa saya bantu hari ini?" aria-label="Teks untuk diucapkan"></textarea><span class="counter" id="counter">0 / 1000</span></div>
+        <div class="controls"><div class="control"><label for="voice">SUARA</label><select id="voice" aria-label="Pilih suara"><option value="">Memuat suara…</option></select></div><div class="control"><label for="speed">KECEPATAN</label><div class="range-row"><input id="speed" type="range" min="0.7" max="1.3" value="1" step="0.1" aria-label="Kecepatan suara"><span id="speed-value" class="range-value">1.0×</span></div></div><div class="control"><label for="pitch">NADA</label><div class="range-row"><input id="pitch" type="range" min="0.8" max="1.2" value="1" step="0.1" aria-label="Nada suara"><span id="pitch-value" class="range-value">1.0×</span></div></div></div>
+        <div class="actions"><button class="primary" id="speak" type="button"><svg id="play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.8c0-.8.87-1.29 1.55-.87l9.15 5.7a1.02 1.02 0 0 1 0 1.74l-9.15 5.7A1.02 1.02 0 0 1 8 17.2V5.8Z"/></svg><span id="button-label">Mulai berbicara</span></button><button class="secondary" id="stop" type="button" aria-label="Hentikan suara" title="Hentikan suara"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg></button><span class="shortcut">⌘ ↵</span></div>
+        <div class="notice" id="notice" role="status" aria-live="polite"></div>
+      </article>
+    </section>
+    <footer class="bottom-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 19 6v5c0 4.7-3.1 8.1-7 10-3.9-1.9-7-5.3-7-10V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg><span>Suara diproses langsung di browser Anda. <b>Teks tidak disimpan.</b></span></footer>
+    <audio id="speech-audio" class="hidden-audio" preload="none"></audio>
+  </main>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const canvas = document.getElementById('character-canvas');
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
+    camera.position.set(0, 0.1, 2.45);
+    const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.18;
+    scene.add(new THREE.HemisphereLight(0xf2e8d0, 0x293021, 2.0));
+    const keyLight = new THREE.DirectionalLight(0xffe5c3, 3.0);
+    keyLight.position.set(-1.4, 1.6, 2.6); scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0xe4edc0, 2.1);
+    fillLight.position.set(2, 0.3, 2); scene.add(fillLight);
+    const rimLight = new THREE.DirectionalLight(0x9cae70, 2.4);
+    rimLight.position.set(-1, 1.2, -1.5); scene.add(rimLight);
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true; controls.dampingFactor = 0.07; controls.enablePan = false;
+    controls.minDistance = 1.5; controls.maxDistance = 3.8;
+    controls.target.set(0, 0.02, 0); controls.update();
+    let character = null;
+    let head = null;
+    let jaw = null;
+    let mouth = null;
+    let speaking = false;
+    let jawAmount = 0;
+    let targetJaw = 0;
+    let hasSpeechBoundary = false;
+    let speechWordShapes = [];
+    let speechEventStart = 0;
+    let speechEventDuration = 0;
+    let speakStartedAt = 0;
+    let previousFrameTime = performance.now();
+    const modelState = document.getElementById('model-state');
+    const notice = document.getElementById('notice');
+
+    function makeMaterial(color, roughness = 0.76) {
+      return new THREE.MeshStandardMaterial({ color, roughness });
+    }
+
+    function addEllipsoid(parent, name, color, position, scale, materialOptions = {}) {
+      const material = new THREE.MeshStandardMaterial({ color, roughness: 0.76, ...materialOptions });
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 24), material);
+      mesh.name = name;
+      mesh.position.set(...position);
+      mesh.scale.set(...scale);
+      parent.add(mesh);
+      return mesh;
+    }
+
+    function createCharacter() {
+      const root = new THREE.Group();
+      root.name = 'Sahabat Suara — karakter prosedural';
+      const shirt = makeMaterial(0x718f55);
+      const shirtLight = makeMaterial(0x9bab72);
+      const skin = makeMaterial(0xb87550);
+      const skinLight = makeMaterial(0xc9865c);
+      const hair = makeMaterial(0x26231f);
+      const dark = makeMaterial(0x35241f);
+      const white = makeMaterial(0xf5eee0);
+      const iris = makeMaterial(0x4a754d);
+      const gold = makeMaterial(0xd9b66f, 0.42);
+
+      addEllipsoid(root, 'Badan', 0x647c4a, [0, -0.69, 0], [0.49, 0.43, 0.31], { color: 0x647c4a });
+      addEllipsoid(root, 'Baju', shirt.color, [0, -0.67, 0.035], [0.45, 0.39, 0.3]);
+      addEllipsoid(root, 'Kerah kiri', shirtLight.color, [-0.105, -0.38, 0.247], [0.14, 0.19, 0.055], { color: 0x9bab72 });
+      addEllipsoid(root, 'Kerah kanan', shirtLight.color, [0.105, -0.38, 0.247], [0.14, 0.19, 0.055], { color: 0x9bab72 });
+      addEllipsoid(root, 'Kancing', gold.color, [0, -0.62, 0.324], [0.026, 0.026, 0.014], { color: 0xd9b66f });
+      addEllipsoid(root, 'Leher', skin.color, [0, -0.285, 0.025], [0.16, 0.22, 0.17], { color: 0xb87550 });
+
+      head = new THREE.Group();
+      head.name = 'Kepala';
+      head.position.set(0, 0.28, 0);
+      root.add(head);
+      addEllipsoid(head, 'Wajah', skinLight.color, [0, 0, 0], [0.48, 0.58, 0.405], { color: 0xc9865c });
+      addEllipsoid(head, 'Telinga kiri', skin.color, [-0.465, -0.015, 0.012], [0.105, 0.15, 0.105], { color: 0xb87550 });
+      addEllipsoid(head, 'Telinga kanan', skin.color, [0.465, -0.015, 0.012], [0.105, 0.15, 0.105], { color: 0xb87550 });
+      const hairCap = new THREE.Mesh(
+        new THREE.SphereGeometry(1, 40, 24, 0, Math.PI * 2, 0, Math.PI * 0.53),
+        hair
+      );
+      hairCap.name = 'Rambut';
+      hairCap.position.set(0, 0.035, 0.005);
+      hairCap.scale.set(0.51, 0.65, 0.445);
+      head.add(hairCap);
+      addEllipsoid(head, 'Poni', hair.color, [0, 0.155, 0.348], [0.29, 0.105, 0.105], { color: 0x26231f });
+
+      for (const side of [-1, 1]) {
+        const eye = new THREE.Group();
+        eye.position.set(side * 0.17, 0.065, 0.43);
+        eye.name = side < 0 ? 'Mata kiri' : 'Mata kanan';
+        head.add(eye);
+        addEllipsoid(eye, 'Putih mata', white.color, [0, 0, 0], [0.067, 0.079, 0.035], { color: 0xf5eee0 });
+        addEllipsoid(eye, 'Iris', iris.color, [0, -0.003, 0.031], [0.034, 0.043, 0.014], { color: 0x4a754d });
+        addEllipsoid(eye, 'Pupil', dark.color, [0, -0.002, 0.042], [0.017, 0.026, 0.009], { color: 0x35241f });
+        addEllipsoid(eye, 'Kilau mata', white.color, [-0.01, 0.015, 0.05], [0.009, 0.011, 0.006], { color: 0xf5eee0, emissive: 0x333333 });
+        const brow = addEllipsoid(head, side < 0 ? 'Alis kiri' : 'Alis kanan', hair.color, [side * 0.17, 0.177, 0.414], [0.095, 0.022, 0.025], { color: 0x342822 });
+        brow.rotation.z = side * -0.08;
+      }
+      addEllipsoid(head, 'Hidung', skin.color, [0, -0.045, 0.402], [0.073, 0.105, 0.09], { color: 0xb87550 });
+      addEllipsoid(head, 'Bayangan hidung', skinLight.color, [0, -0.075, 0.478], [0.047, 0.035, 0.025], { color: 0xd59a70 });
+      mouth = addEllipsoid(head, 'Mulut', 0x48251f, [0, -0.165, 0.412], [0.118, 0.061, 0.025], { color: 0x48251f });
+      addEllipsoid(head, 'Gigi atas', 0xf6edda, [0, -0.139, 0.438], [0.077, 0.018, 0.012], { color: 0xf6edda });
+      jaw = new THREE.Group();
+      jaw.name = 'Rahang bergerak';
+      jaw.position.set(0, -0.205, 0.34);
+      head.add(jaw);
+      addEllipsoid(jaw, 'Rahang bawah', skinLight.color, [0, -0.115, 0.035], [0.285, 0.18, 0.15], { color: 0xc9865c });
+      addEllipsoid(jaw, 'Gigi bawah', white.color, [0, -0.043, 0.195], [0.065, 0.014, 0.01], { color: 0xf5eee0 });
+      addEllipsoid(head, 'Pipi kiri', skinLight.color, [-0.29, -0.11, 0.422], [0.092, 0.052, 0.018], { color: 0xd4946c, transparent: true, opacity: 0.8 });
+      addEllipsoid(head, 'Pipi kanan', skinLight.color, [0.29, -0.11, 0.422], [0.092, 0.052, 0.018], { color: 0xd4946c, transparent: true, opacity: 0.8 });
+
+      addEllipsoid(root, 'Bayangan kaki', 0x11140e, [0, -1.055, -0.015], [0.43, 0.055, 0.22], { color: 0x11140e, transparent: true, opacity: 0.52 });
+      return root;
+    }
+
+    character = createCharacter();
+    scene.add(character);
+    camera.position.set(0, 0.02, 3.45);
+    controls.target.set(0, -0.04, 0);
+    controls.update();
+    modelState.textContent = 'KARAKTER 3D SIAP';
+
+    function applyJawPose(amount) {
+      const opening = THREE.MathUtils.clamp(amount, 0, 1);
+      if (jaw) jaw.rotation.x = 0.55 * opening;
+      if (mouth) mouth.scale.y = 0.061 * (1 + opening * 1.1);
+    }
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      renderer.setSize(rect.width, rect.height, false);
+      camera.aspect = rect.width / rect.height;
+      camera.updateProjectionMatrix();
+    }
+    new ResizeObserver(resize).observe(canvas);
+    resize();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const now = performance.now();
+      const frameDelta = Math.min((now - previousFrameTime) / 1000, 0.05);
+      previousFrameTime = now;
+      if (character) {
+        character.position.y = Math.sin(now * 0.0018) * 0.007;
+        head.rotation.x = Math.sin(now * 0.0012) * 0.008 + jawAmount * 0.025;
+        if (speaking) {
+          if (hasSpeechBoundary && speechWordShapes.length) {
+            const progress = (now - speechEventStart) / speechEventDuration;
+            if (progress >= 0 && progress <= 1) {
+              const position = progress * speechWordShapes.length;
+              const index = Math.min(Math.floor(position), speechWordShapes.length - 1);
+              const nextIndex = Math.min(index + 1, speechWordShapes.length - 1);
+              const blend = THREE.MathUtils.smoothstep(position - index, 0, 1);
+              targetJaw = THREE.MathUtils.lerp(speechWordShapes[index], speechWordShapes[nextIndex], blend);
+            } else targetJaw = 0;
+          } else if (!hasSpeechBoundary) {
+            // Gentle syllable-like motion for speech engines without word boundary events.
+            const elapsed = (now - speakStartedAt) / 1000;
+            const pulse = (Math.sin(elapsed * 11) + Math.sin(elapsed * 17 + 0.7) + Math.sin(elapsed * 23 + 1.9)) / 3;
+            targetJaw = Math.max(0, pulse) * 0.58;
+          } else targetJaw = 0;
+        } else targetJaw = 0;
+
+        // A short opening response and a softer closing response prevent mechanical snapping.
+      const responseTime = targetJaw > jawAmount ? 0.11 : 0.18;
+      jawAmount += (targetJaw - jawAmount) * (1 - Math.exp(-frameDelta / responseTime));
+      applyJawPose(jawAmount);
+      }
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    const textInput = document.getElementById('text');
+    const voiceSelect = document.getElementById('voice');
+    const speakButton = document.getElementById('speak');
+    const buttonLabel = document.getElementById('button-label');
+    const speakingBadge = document.getElementById('speaking');
+    const synth = window.speechSynthesis;
+    let voices = [];
+    let activeUtterance = null;
+
+    function loadVoices() {
+      voices = synth && typeof synth.getVoices === 'function' ? synth.getVoices() : [];
+      voiceSelect.replaceChildren();
+      if (!voices.length) {
+        const option = document.createElement('option');
+        option.value = ''; option.textContent = 'Suara bawaan browser'; voiceSelect.append(option); return;
+      }
+      const sorted = [...voices].sort((a,b) => Number(!a.lang.toLowerCase().startsWith('id')) - Number(!b.lang.toLowerCase().startsWith('id')) || a.name.localeCompare(b.name));
+      sorted.forEach((voice) => {
+        const option = document.createElement('option');
+        option.value = voice.voiceURI; option.textContent = `${voice.name} · ${voice.lang}`;
+        voiceSelect.append(option);
+      });
+      const indonesian = voices.find(v => v.lang.toLowerCase().startsWith('id'));
+      if (indonesian) voiceSelect.value = indonesian.voiceURI;
+    }
+    loadVoices();
+    if (synth) synth.addEventListener('voiceschanged', loadVoices);
+
+    function setSpeaking(value) {
+      speaking = value;
+      speakingBadge.classList.toggle('active', value);
+      speakButton.disabled = value;
+      buttonLabel.textContent = value ? 'Sedang berbicara…' : 'Mulai berbicara';
+      if (!value) targetJaw = 0;
+    }
+    function fail(message) {
+      notice.textContent = message;
+      notice.className = 'notice error';
+    }
+    document.getElementById('speed').addEventListener('input', e => document.getElementById('speed-value').textContent = `${Number(e.target.value).toFixed(1)}×`);
+    document.getElementById('pitch').addEventListener('input', e => document.getElementById('pitch-value').textContent = `${Number(e.target.value).toFixed(1)}×`);
+    textInput.addEventListener('input', () => document.getElementById('counter').textContent = `${textInput.value.length} / 1000`);
+    speakButton.addEventListener('click', () => {
+      const text = textInput.value.trim();
+      if (!text) { fail('Tulis atau tempel teks yang ingin diucapkan.'); textInput.focus(); return; }
+      if (!synth || !window.SpeechSynthesisUtterance) { fail('Browser ini belum mendukung Web Speech API. Coba Chrome, Edge, atau Safari versi terbaru.'); return; }
+      synth.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      const chosenVoice = voices.find(v => v.voiceURI === voiceSelect.value);
+      if (chosenVoice) utterance.voice = chosenVoice;
+      utterance.lang = chosenVoice?.lang || 'id-ID';
+      utterance.rate = Number(document.getElementById('speed').value);
+      utterance.pitch = Number(document.getElementById('pitch').value);
+      activeUtterance = utterance;
+      utterance.onstart = () => { speakStartedAt = performance.now(); hasSpeechBoundary = false; speechWordShapes = []; notice.textContent = ''; notice.className = 'notice'; setSpeaking(true); };
+      utterance.onboundary = event => {
+        if (event.name && event.name !== 'word') return;
+        const spokenWord = text.slice(event.charIndex || 0, (event.charIndex || 0) + (event.charLength || 1)).toLowerCase();
+        if (!spokenWord.trim()) return;
+        hasSpeechBoundary = true;
+        const vowelOpening = {a:0.96, e:0.56, i:0.24, o:0.78, u:0.42};
+        speechWordShapes = [...spokenWord.matchAll(/[aiueo]+/g)].map(match => {
+          const vowels = [...match[0]];
+          return Math.max(...vowels.map(vowel => vowelOpening[vowel] || 0.4));
+        });
+        if (!speechWordShapes.length) speechWordShapes = [0.16];
+        speechEventStart = performance.now();
+        speechEventDuration = THREE.MathUtils.clamp((spokenWord.length * 0.105 + 0.10) / utterance.rate, 0.22, 1.25);
+      };
+      utterance.onend = () => { activeUtterance = null; hasSpeechBoundary = false; setSpeaking(false); notice.textContent = 'Selesai berbicara.'; notice.className = 'notice success'; };
+      utterance.onerror = event => { activeUtterance = null; hasSpeechBoundary = false; setSpeaking(false); if (event.error !== 'canceled' && event.error !== 'interrupted') fail('Suara gagal diputar. Periksa pengaturan suara browser Anda.'); };
+      notice.textContent = '';
+      synth.speak(utterance);
+      setSpeaking(true);
+    });
+    document.getElementById('stop').addEventListener('click', () => {
+      if (synth) synth.cancel();
+      setSpeaking(false);
+    });
+    textInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); speakButton.click(); }
+    });
+  </script>
+</body>
+</html>

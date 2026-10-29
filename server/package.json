@@ -1,0 +1,16 @@
+{
+  "name": "pupr-tts-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Server-side TTS for Resepsionis Virtual PUPR using the ONNX Pipr model",
+  "main": "server.js",
+  "dependencies": {
+    "child_process": "^1.0.2",
+    "minimist": "^1.2.8",
+    "onnxruntime-node": "^1.31.1",
+    "os": "^0.1.2"
+  },
+  "devDependencies": {
+    "fs-extra": "^11.4.1"
+  }
+}
