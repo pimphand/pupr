@@ -13,7 +13,7 @@
     "three": "^0.171.0"
   },
   "devDependencies": {
-    "vite": "^5.4.21"
+    "vite": "^6.0.0"
   },
   "allowScripts": {
     "esbuild@0.21.5": true,
