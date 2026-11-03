@@ -1,15 +1,15 @@
-import '/src/style.css';
-import { HologramScene } from '/src/avatar/hologramScene.js';
-import { createRecognizer, isSpeechRecognitionSupported } from '/src/voice/speechRecognition.js';
+import { HologramScene } from './avatar/hologramScene.js';
+import { createRecognizer, isSpeechRecognitionSupported } from './voice/speechRecognition.js';
 import {
   isSpeechSynthesisSupported, speakText, cancelSpeech, pickIndonesianVoice, getVoices
-} from '/src/voice/speechSynthesis.js';
-import UI from '/src/ui/controls.js';
+} from './voice/speechSynthesis.js';
+import UI from './ui/controls.js';
 
 // ---------- State machine ----------
 const STATE = { IDLE: 'IDLE', LISTENING: 'LISTENING', PROCESSING: 'PROCESSING', SPEAKING: 'SPEAKING', ERROR: 'ERROR' };
 let state = STATE.IDLE;
-let autoListen = true;
+let autoListen = false;
+let recordAfterSpeak = false;
 let recognizer = null;
 let recognitionActive = false;
 let networkRetries = 0;
@@ -22,6 +22,53 @@ const waveCtx = waveCanvas.getContext('2d');
 
 // ---------- Avatar ----------
 const avatar = new HologramScene(avatarCanvas);
+
+function showAppBubble(text) {
+  const b = document.getElementById('appBubble');
+  if (!b) return;
+  b.textContent = text || '';
+  b.style.display = text ? 'block' : 'none';
+}
+function showUserBubble(text) {
+  const b = document.getElementById('userBubble');
+  if (!b) return;
+  b.textContent = text || '';
+  b.style.display = text ? 'block' : 'none';
+}
+
+// ---------- Draggable chat bubble ----------
+(function makeBubbleDraggable() {
+  const bubble = document.getElementById('appBubble');
+  if (!bubble) return;
+  let dragging = false;
+  let offsetX = 0, offsetY = 0;
+  const start = (e) => {
+    const pt = e.touches ? e.touches[0] : e;
+    const rect = bubble.getBoundingClientRect();
+    dragging = true;
+    offsetX = pt.clientX - rect.left;
+    offsetY = pt.clientY - rect.top;
+    bubble.style.transform = 'none';
+    bubble.style.left = rect.left + 'px';
+    bubble.style.top = rect.top + 'px';
+    bubble.style.cursor = 'grabbing';
+    e.preventDefault();
+  };
+  const move = (e) => {
+    if (!dragging) return;
+    const pt = e.touches ? e.touches[0] : e;
+    bubble.style.left = (pt.clientX - offsetX) + 'px';
+    bubble.style.top = (pt.clientY - offsetY) + 'px';
+  };
+  const end = () => { dragging = false; bubble.style.cursor = 'grab'; };
+  bubble.style.cursor = 'grab';
+  bubble.addEventListener('mousedown', start);
+  bubble.addEventListener('touchstart', start, { passive: false });
+  window.addEventListener('mousemove', move);
+  window.addEventListener('touchmove', move, { passive: false });
+  window.addEventListener('mouseup', end);
+  window.addEventListener('touchend', end);
+})();
 
 // ---------- Waveform (visual status) ----------
 let wavePhase = 0;
@@ -102,6 +149,7 @@ function handleFinal(text) {
   recognitionActive = false;
   UI.setMic(false);
   stopListening();
+  showUserBubble(text);
   speakEcho(text);
 }
 
@@ -113,33 +161,32 @@ function speakEcho(text) {
   }
   const token = ++speakToken;
   UI.setSpokenText(text);
+  showAppBubble(text);
   setState(STATE.SPEAKING);
 
+  const voiceSelect = document.getElementById('voiceSelect');
+  const selectedSpeaker = voiceSelect ? voiceSelect.value : 'wibowo';
   const result = speakText(text, {
     lang: 'id-ID',
     rate: 0.95,
     pitch: 1.0,
+    speaker: selectedSpeaker,
     voice: null, // biarkan browser pilih suara default untuk id-ID (lebih andal)
-    onStart: () => {
-      // Fallback animasi berbasis teks untuk browser yang tidak mengirim boundary event.
-      const estimatedDuration = Math.max(1.5, text.length / (10 * 0.95));
-      avatar.setSpeechText(text, estimatedDuration);
-    },
-    onBoundary: (ev) => {
-      if (!ev || (ev.name && ev.name !== 'word')) return;
-      const spokenWord = text.slice(ev.charIndex || 0, (ev.charIndex || 0) + (ev.charLength || 1));
-      if (!spokenWord.trim()) return;
-      // Boundary TTS menjaga awal tiap kata tepat; bentuk mulut dipilih dari hurufnya.
-      avatar.setSpeechWord(spokenWord, Math.max(0.18, spokenWord.length * 0.11 / 0.95));
+    onStart: (_voice, meta = {}) => {
+      const estimatedDuration = Math.max(1.2, text.length / (10.5 * 0.95));
+      const duration = (meta && meta.duration > 0) ? meta.duration : estimatedDuration;
+      // Switch to speaking video only when audio actually starts, to keep in sync.
+      avatar.setActiveVideo('speaking');
+      avatar.setSpeechText(text, duration);
     },
     onEnd: () => {
       if (token !== speakToken) return;
       setState(STATE.IDLE);
+      avatar.setActiveVideo('standby');
       UI.setSpokenText(text);
-      if (autoListen) {
-        setTimeout(() => {
-          if (state === STATE.IDLE && autoListen) startListening();
-        }, 800);
+      if (recordAfterSpeak) {
+        recordAfterSpeak = false;
+        setTimeout(() => { startRecordingFlow(); }, 500);
       }
     },
     onError: (code) => {
@@ -266,7 +313,7 @@ const autoToggle = document.getElementById('autoListen');
 autoToggle.addEventListener('change', (e) => {
   autoListen = e.target.checked;
 });
-autoListen = autoToggle.checked;
+autoListen = false;
 
 // Manual text echo fallback (optional element)
 const manualTextInput = document.getElementById('manualText');
@@ -280,6 +327,171 @@ if (manualTextInput && btnEchoText) {
     speakEcho(t);
   });
   manualTextInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') btnEchoText.click(); });
+}
+
+// ---------- STT backend ----------
+const STT_URL = 'http://127.0.0.1:8767/stt';
+const OPENAI_API_KEY = (typeof localStorage !== 'undefined' && localStorage.getItem('openai_key')) || '';
+
+function floatTo16BitPCM(float32) {
+  const out = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    let s = Math.max(-1, Math.min(1, float32[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+function encodeWAV(samples, sampleRate) {
+  const pcm = floatTo16BitPCM(samples);
+  const buffer = new ArrayBuffer(44 + pcm.length * 2);
+  const view = new DataView(buffer);
+  const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + pcm.length * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, pcm.length * 2, true);
+  let off = 44;
+  for (let i = 0; i < pcm.length; i++) { view.setInt16(off, pcm[i], true); off += 2; }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+async function recordUntilSilence(silenceMs) {
+  silenceMs = silenceMs || 2500;
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  });
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  const source = audioCtx.createMediaStreamSource(stream);
+  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  let startedTalking = false;
+  let lastSound = 0;
+  let consecutiveSound = 0;
+  const THRESH = 0.012;
+
+  processor.onaudioprocess = (e) => {
+    const data = new Float32Array(e.inputBuffer.getChannelData(0));
+    chunks.push(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    const rms = Math.sqrt(sum / data.length);
+    if (rms > THRESH) {
+      consecutiveSound++;
+      if (consecutiveSound >= 2) {
+        startedTalking = true;
+        lastSound = Date.now();
+      }
+    } else {
+      consecutiveSound = 0;
+    }
+  };
+
+  source.connect(processor);
+  processor.connect(audioCtx.destination);
+  await new Promise((resolve) => {
+    const iv = setInterval(() => {
+      if (startedTalking && Date.now() - lastSound >= silenceMs) {
+        clearInterval(iv);
+        resolve();
+      }
+    }, 200);
+  });
+
+  processor.disconnect();
+  source.disconnect();
+  stream.getTracks().forEach((track) => track.stop());
+  await audioCtx.close();
+  const total = chunks.reduce((n, chunk) => n + chunk.length, 0);
+  const samples = new Float32Array(total);
+  let pos = 0;
+  for (const chunk of chunks) {
+    samples.set(chunk, pos);
+    pos += chunk.length;
+  }
+  return encodeWAV(samples, audioCtx.sampleRate);
+}
+
+async function transcribe(wavBlob) {
+  const fd = new FormData();
+  fd.append('audio', wavBlob, 'audio.wav');
+  const res = await fetch(STT_URL, { method: 'POST', body: fd });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'STT gagal');
+  return (data && data.text) ? data.text : '';
+}
+
+async function askAI(userText) {
+  try {
+    const res = await fetch('http://127.0.0.1:8767/ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: userText })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'AI gagal memproses jawaban');
+    return (data && data.text) ? data.text : null;
+  } catch (e) {
+    showAppBubble(e.message || 'AI tidak tersedia.');
+    return null;
+  }
+}
+
+async function startRecordingFlow() {
+  avatar.setActiveVideo('standby');
+  showAppBubble('Mendengarkan...');
+  const t0 = Date.now();
+  const iv = setInterval(() => {
+    const sec = ((Date.now() - t0) / 1000).toFixed(1);
+    showAppBubble('Mendengarkan... ' + sec + 's');
+  }, 500);
+  try {
+    const wav = await recordUntilSilence(1500);
+    clearInterval(iv);
+    avatar.setActiveVideo('standby');
+    showAppBubble('Memproses...');
+    const text = await transcribe(wav);
+    if (text && text.trim()) {
+      showUserBubble(text);
+      showAppBubble('Berpikir...');
+      const reply = await askAI(text);
+      if (reply) {
+        showAppBubble(reply);
+        recordAfterSpeak = true;
+        speakEcho(reply);
+      } else {
+        // no AI key/result: fallback echo
+        showAppBubble(text);
+        recordAfterSpeak = true;
+        speakEcho(text);
+      }
+    } else {
+      // belum ada suara -> tetap standby
+      showAppBubble('');
+    }
+  } catch (e) {
+    showAppBubble('Gagal merekam: ' + (e && e.message ? e.message : e));
+  }
+}
+
+// ---------- Mulai button ----------
+const btnMulai = document.getElementById('btnMulai');
+if (btnMulai) {
+  btnMulai.addEventListener('click', () => {
+    if (state !== STATE.IDLE && state !== STATE.ERROR) return;
+    recordAfterSpeak = true;
+    speakEcho('selamat datang di Dinas Pekerjaan Umum Kabupaten Sukabumi');
+  });
 }
 
 // ---------- Initial state ----------

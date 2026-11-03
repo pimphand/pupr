@@ -1,9 +1,17 @@
 const el = (id) => document.getElementById(id);
 
+const STATE_LABELS = {
+  IDLE: 'SIAP',
+  LISTENING: 'MENDENGARKAN',
+  PROCESSING: 'MEMPROSES',
+  SPEAKING: 'BERBICARA',
+  ERROR: 'GANGGUAN'
+};
+
 export const UI = {
   setStatus(s) {
     const label = el('stateLabel');
-    if (label) label.textContent = s;
+    if (label) label.textContent = STATE_LABELS[s] || s;
     const pill = el('statePill');
     if (pill) pill.className = 'status-pill ' + (s === 'ERROR' ? 'err' : s === 'SPEAKING' ? 'ok' : s === 'LISTENING' ? 'active' : '');
   },

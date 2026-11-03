@@ -7,11 +7,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/src/style.css" />
+  <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
   <div class="app">
-    <header class="header">
+    <header class="header" style="display:none">
       <div class="brand">
         <div class="logo">
           <svg viewBox="0 0 40 40" width="36" height="36" aria-hidden="true">
@@ -36,7 +36,9 @@
       </div>
     </header>
 
-    <main class="main">
+    <div id="appBubble" style="display:none;position:fixed;top:18%;left:8%;max-width:40%;background:rgba(6,20,40,0.85);border:1px solid rgba(0,229,255,0.55);border-radius:16px;padding:14px 20px;color:#e6f7ff;font-family:Inter,sans-serif;font-size:16px;z-index:20;box-shadow:0 0 20px rgba(0,229,255,0.3);text-align:left;"></div>
+    <div id="userBubble" style="display:none;position:fixed;top:18%;right:8%;max-width:40%;background:rgba(20,40,60,0.85);border:1px solid rgba(255,255,255,0.3);border-radius:16px;padding:14px 20px;color:#fff;font-family:Inter,sans-serif;font-size:16px;z-index:20;box-shadow:0 0 12px rgba(0,0,0,0.3);text-align:right;"></div>
+    <main class="main" style="grid-template-columns:1fr">
       <section class="avatar-panel">
         <div class="holo-frame">
           <canvas id="avatarCanvas"></canvas>
@@ -50,7 +52,7 @@
         </div>
       </section>
 
-      <section class="info-panel">
+      <section class="info-panel" style="display:none">
         <div class="card">
           <h2>Status Sistem</h2>
           <div class="row"><span>Browser</span><span id="browserInfo">—</span></div>
@@ -59,7 +61,7 @@
           <div class="row"><span>Suara Indonesia</span><span id="idVoiceInfo">—</span></div>
         </div>
 
-        <div class="card" style="display: none;">
+        <div class="card">
           <h2>Visualisasi Suara</h2>
           <canvas id="waveCanvas" width="400" height="120"></canvas>
         </div>
@@ -69,7 +71,7 @@
           <div class="transcript hologram" id="spokenText">—</div>
         </div>
 
-        <div class="controls" style="display: none;">
+        <div class="controls">
           <button id="btnStart" class="btn primary">Mulai Bicara</button>
           <button id="btnStop" class="btn danger">Berhenti</button>
           <button id="btnRepeat" class="btn secondary">Ulangi Suara</button>
@@ -91,12 +93,20 @@
       </section>
     </main>
 
-    <footer class="footer">
+    <footer class="footer" style="display:none">
       <span>Prototipe Simulasi — Dinas PUPR</span>
       <span>Pengenalan suara browser dapat memerlukan koneksi internet.</span>
     </footer>
   </div>
 
-  <script type="module" src="/src/main.js"></script>
+  <button id="btnMulai" style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:20;padding:12px 28px;border:none;border-radius:999px;background:#00e5ff;color:#02060f;font-family:Inter,sans-serif;font-weight:700;font-size:15px;cursor:pointer;box-shadow:0 0 18px rgba(0,229,255,0.5);">Mulai</button>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./node_modules/three/build/three.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="./src/main.js"></script>
 </body>
 </html>
