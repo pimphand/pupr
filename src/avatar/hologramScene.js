@@ -1,15 +1,25 @@
 import * as THREE from 'three';
 import { getSpeechClock } from '../voice/speechSynthesis.js';
 
-const BACKGROUND_PATH = './public/background.png';
-const CHARACTER_FRAME = { width: 944, height: 944 };
-
 const MOUTH_MIN_HOLD_MS = 85;
 const MOUTH_MIN_SEGMENT_S = 0.09;
 
 export class HologramScene {
-  constructor(canvas) {
+  constructor(canvas, options = {}) {
     this.canvas = canvas;
+    this.options = {
+      backgroundPath: './public/background.png',
+      videos: {
+        standby: './public/karakter_baru/stanby.mp4',
+        speaking: './public/video.mp4'
+      },
+      imageWidth: 3.55,
+      fitScale: 0.72,
+      positionStorageKey: 'pupr-avatar-character-position-v4',
+      characterPositionY: -0.34,
+      ...options,
+      videos: { standby: './public/karakter_baru/stanby.mp4', speaking: './public/video.mp4', ...(options.videos || {}) }
+    };
     this.state = 'IDLE';
     this.speaking = false;
     this.speechSchedule = [];
@@ -66,7 +76,7 @@ export class HologramScene {
     this.scene.add(this.backgroundMesh);
     this.materials.push(material);
 
-    this.textureLoader.load(BACKGROUND_PATH, (texture) => {
+    this.textureLoader.load(this.options.backgroundPath, (texture) => {
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.minFilter = THREE.LinearFilter;
       texture.magFilter = THREE.LinearFilter;
@@ -108,7 +118,7 @@ export class HologramScene {
     root.name = 'Karakter Video PUPR';
 
     this.characterAspect = 9 / 16;
-    const imageWidth = 3.55;
+    const imageWidth = Number(this.options.imageWidth) || 3.55;
 
     const makeVideo = (src) => {
       const video = document.createElement('video');
@@ -122,8 +132,8 @@ export class HologramScene {
     };
 
     this.videos = {
-      standby: makeVideo('./public/karakter_baru/stanby.mp4'),
-      speaking: makeVideo('./public/video.mp4')
+      standby: makeVideo(this.options.videos?.standby || './public/karakter_baru/stanby.mp4'),
+      speaking: makeVideo(this.options.videos?.speaking || './public/video.mp4')
     };
     this.textures = {
       standby: new THREE.VideoTexture(this.videos.standby),
@@ -229,7 +239,7 @@ export class HologramScene {
 
     root.add(this.characterMesh);
     root.add(this.characterOverlay);
-    root.position.y = -0.34;
+    root.position.y = Number(this.options.characterPositionY ?? -0.34);
     this.enableCharacterDragging(root, this.characterMesh, imageWidth, imageWidth * this.characterAspect);
 
     for (const v of Object.values(this.videos)) {
@@ -247,7 +257,7 @@ export class HologramScene {
   }
 
   enableCharacterDragging(root, characterMesh, imageWidth, imageHeight) {
-    const storageKey = 'pupr-avatar-character-position-v4';
+    const storageKey = this.options.positionStorageKey || 'pupr-avatar-character-position-v4';
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
@@ -432,13 +442,17 @@ export class HologramScene {
       return;
     }
     const oldTexture = this.videoTexture;
-    const oldKey = this.activeVideoKey;
     this.activeVideoKey = key;
     this.video = this.videos[key];
     this.videoTexture = this.textures[key];
     if (this.characterMesh && this.characterMesh.material) {
-      this.characterMesh.material.map = this.videoTexture;
-      this.characterMesh.material.needsUpdate = true;
+      const material = this.characterMesh.material;
+      if (material.uniforms && material.uniforms.map) {
+        material.uniforms.map.value = this.videoTexture;
+      } else {
+        material.map = this.videoTexture;
+      }
+      material.needsUpdate = true;
     }
     // Crossfade: keep old video on overlay for 2s
     if (this.characterOverlay && oldTexture) {
@@ -484,10 +498,10 @@ export class HologramScene {
     this.camera.right = viewWidth / 2;
     this.camera.top = viewHeight / 2;
     this.camera.bottom = -viewHeight / 2;
-    const imageWidth = 3.55;
+    const imageWidth = Number(this.options.imageWidth) || 3.55;
     const aspect = this.characterAspect || 9 / 16;
     const imageHeight = imageWidth * aspect;
-    const fit = Math.min(viewWidth / imageWidth, viewHeight / imageHeight) * 0.72;
+    const fit = Math.min(viewWidth / imageWidth, viewHeight / imageHeight) * (Number(this.options.fitScale) || 0.72);
     this.character.scale.setScalar(fit);
     this.updateBackgroundLayout();
     this.camera.updateProjectionMatrix();

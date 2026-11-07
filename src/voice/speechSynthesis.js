@@ -1,4 +1,16 @@
-const TTS_BACKEND_URL = 'http://127.0.0.1:8767';
+let ttsConfig = {
+  backendBaseUrl: 'http://127.0.0.1:8767',
+  defaultSpeaker: 'wibowo',
+  rate: 1,
+  pitch: 1,
+  volume: 1,
+  backendFirst: true,
+  defaultLang: 'id-ID'
+};
+
+export function configureSpeechSynthesis(config = {}) {
+  ttsConfig = { ...ttsConfig, ...config };
+}
 
 export function isSpeechSynthesisSupported() {
   return !!window.speechSynthesis && !!window.SpeechSynthesisUtterance;
@@ -11,8 +23,9 @@ export function getVoices() {
 
 export function pickIndonesianVoice(voices) {
   const list = voices || getVoices();
-  const idVoices = list.filter((v) => (v.lang || '').toLowerCase().startsWith('id'));
-  if (idVoices.length) return idVoices[0];
+  const langPrefix = String(ttsConfig.defaultLang || 'id').toLowerCase().split('-')[0];
+  const matching = list.filter((v) => (v.lang || '').toLowerCase().startsWith(langPrefix));
+  if (matching.length) return matching[0];
   return list.length ? list[0] : null;
 }
 
@@ -22,15 +35,16 @@ function speakWithBrowser(text, opts = {}) {
   synth.cancel();
   const u = new SpeechSynthesisUtterance(text);
   const voice = (opts.voice !== undefined && opts.voice !== null) ? opts.voice : null;
+  const lang = opts.lang || ttsConfig.defaultLang || 'id-ID';
   if (voice) {
     u.voice = voice;
-    u.lang = (voice.lang && voice.lang !== u.lang) ? voice.lang : (opts.lang || 'id-ID');
+    u.lang = (voice.lang && voice.lang !== u.lang) ? voice.lang : lang;
   } else {
-    u.lang = opts.lang || 'id-ID';
+    u.lang = lang;
   }
-  u.rate = (opts.rate !== undefined) ? opts.rate : 1;
-  u.pitch = (opts.pitch !== undefined) ? opts.pitch : 1;
-  u.volume = (opts.volume !== undefined) ? opts.volume : 1;
+  u.rate = (opts.rate !== undefined) ? opts.rate : (ttsConfig.rate ?? 1);
+  u.pitch = (opts.pitch !== undefined) ? opts.pitch : (ttsConfig.pitch ?? 1);
+  u.volume = (opts.volume !== undefined) ? opts.volume : (ttsConfig.volume ?? 1);
   let ended = false;
   const finish = (cb) => { if (ended) return; ended = true; if (cb) cb(); };
   if (opts.onStart) {
@@ -62,16 +76,18 @@ function speakWithBrowser(text, opts = {}) {
 
 export async function tryBackendTTS(text, opts = {}) {
   try {
-    const res = await fetch(`${TTS_BACKEND_URL}/tts`, {
+    const baseUrl = String(opts.backendBaseUrl || ttsConfig.backendBaseUrl || '').replace(/\/$/, '');
+    if (!baseUrl) return null;
+    const res = await fetch(`${baseUrl}/tts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, speaker: opts.speaker || 'wibowo' })
+      body: JSON.stringify({ text, speaker: opts.speaker || ttsConfig.defaultSpeaker || 'wibowo' })
     });
     if (!res.ok) return null;
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.playbackRate = opts.rate || 1;
+    audio.playbackRate = opts.rate ?? ttsConfig.rate ?? 1;
     let ended = false;
     const finish = (cb) => { if (ended) return; ended = true; currentAudio = null; try { URL.revokeObjectURL(url); } catch (e) {} if (cb) cb(); };
     attachLipSync(audio);
@@ -102,13 +118,18 @@ export async function tryBackendTTS(text, opts = {}) {
 }
 
 export function speakText(text, opts = {}) {
-  // Try backend (Wibowo) first, fall back to browser TTS.
-  tryBackendTTS(text, opts).then((result) => {
+  const merged = { ...ttsConfig, ...opts };
+  if (merged.backendFirst === false) {
+    speakWithBrowser(text, merged);
+    return { supported: true };
+  }
+  // Try backend TTS first, fall back to browser TTS.
+  tryBackendTTS(text, merged).then((result) => {
     if (!result) {
-      speakWithBrowser(text, opts);
+      speakWithBrowser(text, merged);
     }
   }).catch(() => {
-    speakWithBrowser(text, opts);
+    speakWithBrowser(text, merged);
   });
   return { supported: true };
 }
@@ -210,4 +231,4 @@ export function cancelSpeech() {
   }
 }
 
-export default { isSpeechSynthesisSupported, getVoices, pickIndonesianVoice, speakText, cancelSpeech, tryBackendTTS, getSpeechClock };
+export default { configureSpeechSynthesis, isSpeechSynthesisSupported, getVoices, pickIndonesianVoice, speakText, cancelSpeech, tryBackendTTS, getSpeechClock };

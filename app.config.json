@@ -1,0 +1,72 @@
+{
+  "app": {
+    "name": "Resepsionis Virtual PUPR",
+    "subtitle": "Holographic Echo System",
+    "organization": "Dinas Pekerjaan Umum Kabupaten Sukabumi",
+    "greeting": "selamat datang di Dinas Pekerjaan Umum Kabupaten Sukabumi",
+    "language": "id-ID",
+    "footerLeft": "Prototipe Simulasi — Dinas PUPR",
+    "footerRight": "Pengenalan suara browser dapat memerlukan koneksi internet.",
+    "theme": {
+      "primaryColor": "#00e5ff"
+    }
+  },
+  "electron": {
+    "window": {
+      "width": 1280,
+      "height": 800,
+      "title": "Resepsionis Virtual PUPR — Holographic Echo System"
+    },
+    "permissions": {
+      "media": true,
+      "audioCapture": true,
+      "microphone": true
+    },
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+  },
+  "backend": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8767,
+    "baseUrl": "http://127.0.0.1:8767",
+    "pythonScript": "server_stt.py",
+    "autoStart": true
+  },
+  "features": {
+    "sttEnabled": true,
+    "ttsEnabled": true,
+    "aiEnabled": true,
+    "browserSpeechRecognitionFallback": true,
+    "recordAfterSpeak": true,
+    "showDebugPanels": false
+  },
+  "tts": {
+    "defaultSpeaker": "wibowo",
+    "rate": 0.88,
+    "pitch": 1.0,
+    "volume": 1.0,
+    "backendFirst": true
+  },
+  "stt": {
+    "silenceMs": 1500,
+    "maxNetworkRetries": 3,
+    "retryDelayMs": 1000
+  },
+  "avatar": {
+    "backgroundPath": "./public/background.png",
+    "videos": {
+      "standby": "./public/karakter_baru/stanby.mp4",
+      "speaking": "./public/video.mp4"
+    },
+    "imageWidth": 3.55,
+    "fitScale": 0.72,
+    "positionStorageKey": "pupr-avatar-character-position-v4"
+  },
+  "ai": {
+    "systemPrompt": "Anda adalah resepsionis virtual resmi Dinas Pekerjaan Umum (PU) Kabupaten Sukabumi. Layani percakapan interaktif dengan warga secara ramah, sopan, singkat, jelas, dan membantu. Jawab dalam bahasa Indonesia. Gunakan konteks percakapan sebelumnya, jawab pertanyaan lanjutan secara natural, dan jangan mengarang informasi resmi. Jika informasi tidak tersedia, katakan bahwa informasi perlu dikonfirmasi kepada Dinas PU Kabupaten Sukabumi.",
+    "maxHistoryMessages": 12,
+    "maxTextChars": 800,
+    "maxReplyChars": 1200,
+    "cooldownSeconds": 2
+  }
+}

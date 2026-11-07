@@ -1,16 +1,33 @@
 # Resepsionis Virtual PUPR — Holographic Echo System
 
-Aplikasi web simulasi resepsionis virtual hologram Dinas PUPR. Karakter hologram mendengarkan ucapan pengguna (bahasa Indonesia) lalu mengucapkan ulang kalimat yang sama (Echo Mode).
+Aplikasi Electron/renderer simulasi resepsionis virtual hologram Dinas PUPR. Karakter hologram mendengarkan ucapan pengguna, mengirimnya ke backend lokal (STT/AI/TTS opsional), lalu merespons dengan suara.
 
-## Struktur proyek
+## Perubahan Dinamis (baru)
 
-```
+Konfigurasi utama sekarang dipusatkan di **`app.config.json`** (di root `pupr/`) agar mudah diubah tanpa hardcode.
+
+- `main.js` (Electron): window, permission, user-agent, start backend Python.
+- `server_stt.py` (Flask backend): host/port, bahasa STT, prompt AI, batas/cooldown, speaker TTS default.
+- `src/main.js` (renderer): base URL backend, greeting/branding, bahasa, perilaku STT/TTS/AI, toggle fitur.
+- `src/voice/speechSynthesis.js`: konfigurasi backend TTS, speaker, rate/pitch/volume, backend-first.
+- `src/avatar/hologramScene.js`: background/video avatar, ukuran/posisi, storage key posisi.
+
+Detail: lihat `ELECTRON_DYNAMIC.md`.
+
+## Struktur proyek (ringkas)
+
+```text
 pupr/
+├── app.config.json         # konfigurasi dinamis utama
 ├── index.html
+├── main.js                 # Electron main process
+├── preload.js
+├── server_stt.py           # backend lokal STT/TTS/AI
 ├── package.json
-├── vite.config.js (opsional)
+├── ELECTRON_DYNAMIC.md
 ├── src/
-│   ├── main.js
+│   ├── appConfig.js        # loader config frontend
+│   ├── main.js             # renderer logic
 │   ├── style.css
 │   ├── avatar/hologramScene.js
 │   ├── voice/speechRecognition.js
@@ -22,50 +39,35 @@ pupr/
 ## Instalasi dependensi
 
 ```bash
-cd /Users/admin/Project/pupr
+cd /Users/admin/Project/Dinas/pupr
 npm install
 ```
 
-(Jika devDependencies tidak terpasang, jalankan `npm install --include=dev`.)
+Backend Python (opsional tapi direkomendasikan untuk STT/AI/TTS lokal): siapkan environment Python dan dependency yang dipakai `server_stt.py` (mis. `flask`, `flask-cors`, `SpeechRecognition`), plus `.env` untuk API key/provider AI bila digunakan.
 
-## Menjalankan (Vite)
+## Menjalankan (Electron)
 
 ```bash
-npm run dev
-```
-Buka URL yang ditampilkan (biasanya `http://localhost:5173`) di Google Chrome.
-
-Alternatif tanpa Vite (butuh server statis):
-```bash
-python3 -m http.server 8000
-# buka http://localhost:8000
+npm start
 ```
 
-## Mengizinkan mikrofon
+Electron akan memuat app via server statis lokal internal dan (secara default) mencoba menjalankan `server_stt.py` sesuai `app.config.json`.
 
-Saat menekan "Mulai Bicara", browser meminta izin mikrofon → klik "Izinkan". Jika ditolak, buka ikon gembok di address bar → izinkan mikrofon → refresh.
+## Konfigurasi cepat (`app.config.json`)
 
-## Cara menguji alur
+Contoh hal yang bisa diubah:
+- `app.name`, `app.organization`, `app.greeting`, `app.language`
+- `backend.enabled`, `backend.host`, `backend.port`, `backend.baseUrl`
+- `avatar.backgroundPath`, `avatar.videos.standby`, `avatar.videos.speaking`
+- `tts.defaultSpeaker`, `tts.rate`, `tts.backendFirst`
+- `stt.silenceMs`, `stt.maxNetworkRetries`
+- `features.aiEnabled`, `features.recordAfterSpeak`, `features.showDebugPanels`
 
-1. Buka halaman, pastikan karakter hologram tampil.
-2. Klik "Mulai Bicara", izinkan mikrofon.
-3. Ucapkan kalimat, misal: "Selamat pagi, saya ingin menanyakan kondisi jalan di wilayah saya."
-4. Teks muncul di panel "Teks Ucapan Pengguna".
-5. Karakter mengucapkan ulang kalimat tersebut (panel "Teks Ucapan Hologram").
-6. Animasi mulut aktif saat berbicara.
-7. Setelah selesai, kembali mendengarkan (jika auto-listen aktif).
-8. Uji "Berhenti" dan "Ulangi Suara". Gunakan "Echo Teks" jika STT tidak berfungsi.
+> Setelah mengubah config/backend, restart aplikasi Electron.
 
-## Keterbatasan
+## Catatan & troubleshooting
 
-- SpeechRecognition (Chrome) memerlukan koneksi internet (layanan Google).
-- Suara Indonesia (id-ID) tidak selalu tersedia; jika tidak ada, fallback ke suara lain dengan pemberitahuan.
-- Karakter dibuat prosedural (hologram cyan) tanpa ketergantungan file GLB.
-- Tidak semua browser mendukung Web Speech API (gunakan Chrome/Edge).
-
-## Pemecahan masalah
-
-- Mikrofon tidak berfungsi: pastikan localhost/HTTPS, izin diberikan.
-- SpeechRecognition error 'network': periksa koneksi internet, firewall/VPN, gunakan localhost.
-- Tidak ada suara Indonesia: pilih suara lain; pemberitahuan muncul.
-- Karakter tidak tampil: jalankan via `npm run dev` atau server statis.
+- Mikrofon memerlukan izin OS/browser runtime Electron.
+- SpeechRecognition browser/layanan tertentu bisa butuh koneksi internet.
+- Jika backend Python tidak jalan, fitur STT/AI/TTS backend bisa gagal; TTS akan fallback ke browser TTS bila tersedia.
+- `speechSynthesis.js` tetap punya default fallback (untuk pemakaian modul terpisah), tapi runtime utama membaca nilai dari `app.config.json`.
