@@ -23,8 +23,11 @@ const DEFAULT_CONFIG = {
     showDebugPanels: false
   },
   tts: {
-    defaultSpeaker: 'wibowo',
-    rate: 0.88,
+    provider: 'databyte',
+    defaultSpeaker: 'brian',
+    defaultVoice: 'brian',
+    model: 'elevenlabs/eleven-v3-conversational',
+    rate: 1.0,
     pitch: 1.0,
     volume: 1.0,
     backendFirst: true

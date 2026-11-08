@@ -1,6 +1,6 @@
 let ttsConfig = {
   backendBaseUrl: 'http://127.0.0.1:8767',
-  defaultSpeaker: 'wibowo',
+  defaultSpeaker: 'brian',
   rate: 1,
   pitch: 1,
   volume: 1,
@@ -81,7 +81,7 @@ export async function tryBackendTTS(text, opts = {}) {
     const res = await fetch(`${baseUrl}/tts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, speaker: opts.speaker || ttsConfig.defaultSpeaker || 'wibowo' })
+      body: JSON.stringify({ text, speaker: opts.speaker || opts.voice || ttsConfig.defaultSpeaker || 'brian', voice: opts.voice || opts.speaker || ttsConfig.defaultSpeaker || 'brian' })
     });
     if (!res.ok) return null;
     const blob = await res.blob();

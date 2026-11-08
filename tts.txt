@@ -1,0 +1,17 @@
+curl https://ai.databyte.co.id/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-db-G9ebHXAioEYhqL9q7mWBc7vb46xVgDcmxHO0piXXD2sMjQHk" \
+  -d '{
+    "model": "anthropic/claude-3.7-sonnet",
+    "messages": [{"role": "user", "content": "Halo DataByte!"}]
+  }'
+
+  curl https://ai.databyte.co.id/gateway/v1/audio/speech \
+  -H "Authorization: Bearer sk-db-G9ebHXAioEYhqL9q7mWBc7vb46xVgDcmxHO0piXXD2sMjQHk" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "elevenlabs/eleven-v3-conversational",
+    "input": "Selamat datang di DataByte AI Gateway.",
+    "voice": "george"
+  }' \
+  --output speech.mp3

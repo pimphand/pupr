@@ -1,11 +1,14 @@
 import os
+import re
 import tempfile
 import hashlib
 import json as _json
 import threading
 import time
 import urllib.request
-from urllib.error import HTTPError
+import urllib.parse
+from html.parser import HTMLParser
+from urllib.error import HTTPError, URLError
 from pathlib import Path
 import speech_recognition as sr
 from flask import Flask, request, jsonify
@@ -93,6 +96,7 @@ def _mask_for_log(value):
 
 
 def load_dashboard_pupr_keys(payload=None):
+    global CLOUDFLARE_AI_RUN_URL, CLOUDFLARE_AI_FORMAT
     """Load PUPR API keys + AI config from dashboard API/DB (public.app_settings). Source of truth."""
     if payload is None:
         payload = fetch_dashboard_pupr_config()
@@ -123,6 +127,21 @@ def load_dashboard_pupr_keys(payload=None):
                         print('[config] DB key check:', cf, 'CLOUDFLARE_API_TOKEN=' + _mask_for_log(os.environ.get('CLOUDFLARE_API_TOKEN','')), flush=True)
                 else:
                     print('[config] Dashboard DB config loaded but no API keys are set (fill in Admin > PUPR API Keys).', flush=True)
+        # Dedicated Cloudflare provider table (URL + model) from dashboard DB
+        cfprov = payload.get('cloudflareProvider')
+        if isinstance(cfprov, dict):
+            ru = str(cfprov.get('runUrl') or cfprov.get('run_url') or '').strip()
+            if ru:
+                CLOUDFLARE_AI_RUN_URL = ru[:500]
+                os.environ['CLOUDFLARE_AI_RUN_URL'] = CLOUDFLARE_AI_RUN_URL
+            rf = str(cfprov.get('requestFormat') or cfprov.get('request_format') or '').strip().lower()
+            if rf in ('auto', 'messages', 'gemini_contents'):
+                CLOUDFLARE_AI_FORMAT = rf
+                os.environ['CLOUDFLARE_AI_FORMAT'] = rf
+            cm = str(cfprov.get('model') or '').strip()
+            if cm:
+                os.environ['CLOUDFLARE_AI_MODEL'] = cm[:200]
+            print('[config] Loaded Cloudflare provider from dashboard DB:', CLOUDFLARE_AI_RUN_URL[:80], os.environ.get('CLOUDFLARE_AI_MODEL',''), CLOUDFLARE_AI_FORMAT, flush=True)
         if isinstance(ai_cfg, dict) and apply_dashboard_ai_config(ai_cfg):
             os.environ['PUPR_AI_CONFIG_SOURCE'] = f"dashboard_db:{DASHBOARD_CONFIG_URL}"
             print('[config] Loaded PUPR AI config from dashboard DB (systemPrompt + limits)', flush=True)
@@ -149,7 +168,7 @@ def deep_merge(base, override):
 FALLBACK_APP_CONFIG = {
     'app': {'language': 'id-ID'},
     'backend': {'host': '127.0.0.1', 'port': 8767},
-    'tts': {'defaultSpeaker': 'wibowo'},
+    'tts': {'provider': 'databyte', 'defaultSpeaker': 'brian', 'defaultVoice': 'brian', 'model': 'elevenlabs/eleven-v3-conversational', 'apiUrl': 'https://ai.databyte.co.id/gateway/v1/audio/speech'},
     'ai': {
         'systemPrompt': '',  # filled from dashboard API/DB (pupr.ai_config.systemPrompt)
         'maxHistoryMessages': 12,
@@ -160,10 +179,10 @@ FALLBACK_APP_CONFIG = {
 }
 
 FALLBACK_SYSTEM_PROMPT = (
-    'Anda adalah resepsionis virtual resmi Dinas Pekerjaan Umum (PU) Kabupaten Sukabumi. '
+    'Anda adalah resepsionis virtual resmi Dinas Pekerjaan Umum dan Penataan Ruang (DPU) Kabupaten Sukabumi. '
     'Layani percakapan interaktif dengan warga secara ramah, sopan, singkat, jelas, dan membantu. '
-    'Jawab dalam bahasa Indonesia. Gunakan konteks percakapan sebelumnya, jawab pertanyaan lanjutan secara natural, '
-    'dan jangan mengarang informasi resmi. Jika informasi tidak tersedia, katakan bahwa informasi perlu dikonfirmasi kepada Dinas PU Kabupaten Sukabumi.'
+    'Jawab dalam bahasa Indonesia. Gunakan konteks percakapan sebelumnya dan, jika tersedia, "Referensi Website DPU" yang diberikan oleh sistem sebagai sumber jawaban. '
+    'Jangan mengarang informasi resmi. Jika informasi tidak ada di referensi/konteks, katakan dengan jujur bahwa informasi perlu dikonfirmasi ke DPU Kabupaten Sukabumi dan arahkan ke https://dpu.sukabumikab.go.id bila relevan.'
 )
 
 
@@ -217,12 +236,146 @@ AI_LOCK = threading.Lock()
 AI_COOLDOWN_SECONDS = float((APP_CONFIG.get('ai') or {}).get('cooldownSeconds', 2))
 last_ai_request_at = 0.0
 SYSTEM_PROMPT = (APP_CONFIG.get('ai') or {}).get('systemPrompt') or FALLBACK_SYSTEM_PROMPT
-DEFAULT_TTS_SPEAKER = (APP_CONFIG.get('tts') or {}).get('defaultSpeaker', 'wibowo')
+_tts_cfg = (APP_CONFIG.get('tts') or {})
+TTS_PROVIDER = str(os.environ.get('TTS_PROVIDER') or _tts_cfg.get('provider') or 'databyte').strip().lower()
+DEFAULT_TTS_SPEAKER = str(os.environ.get('TTS_VOICE') or _tts_cfg.get('defaultVoice') or _tts_cfg.get('defaultSpeaker') or 'brian').strip() or 'brian'
+TTS_API_URL = str(os.environ.get('TTS_API_URL') or _tts_cfg.get('apiUrl') or 'https://ai.databyte.co.id/gateway/v1/audio/speech').strip()
+TTS_API_KEY = str(os.environ.get('TTS_API_KEY') or _tts_cfg.get('apiKey') or '').strip()
+TTS_MODEL = str(os.environ.get('TTS_MODEL') or _tts_cfg.get('model') or 'elevenlabs/eleven-v3-conversational').strip()
+TTS_TIMEOUT = float(os.environ.get('TTS_TIMEOUT') or _tts_cfg.get('timeoutSeconds') or 60)
+# Cloudflare Workers AI provider (run URL + model/format) - can be overridden by dashboard DB pupr_cloudflare_provider
+CLOUDFLARE_AI_RUN_URL = (os.environ.get('CLOUDFLARE_AI_RUN_URL') or 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run').strip()
+CLOUDFLARE_AI_FORMAT = (os.environ.get('CLOUDFLARE_AI_FORMAT') or 'auto').strip().lower()  # auto|messages|gemini_contents
 STT_LANGUAGE = (APP_CONFIG.get('app') or {}).get('language', 'id-ID')
+# Website reference (RAG-lite): AI can read selected official pages as grounded context.
+REFERENCE_WEBSITE_ENABLED = bool((APP_CONFIG.get('ai') or {}).get('referenceWebsiteEnabled', True))
+REFERENCE_WEBSITE_URL = ((APP_CONFIG.get('ai') or {}).get('referenceWebsiteUrl') or 'https://dpu.sukabumikab.go.id').strip()
+REFERENCE_WEBSITE_MAX_CHARS = int((APP_CONFIG.get('ai') or {}).get('referenceWebsiteMaxChars', 3500))
+REFERENCE_WEBSITE_TTL_SECONDS = int((APP_CONFIG.get('ai') or {}).get('referenceWebsiteTtlSeconds', 900))
+REFERENCE_WEBSITE_ALLOWED_HOST = 'dpu.sukabumikab.go.id'
+_REFERENCE_WEB_CACHE = {}  # url -> {ts,text,err}
+_REFERENCE_WEB_LOCK = threading.Lock()
+
+def _sanitize_reference_website_url(url):
+    raw = (url or '').strip()
+    if not raw:
+        return 'https://dpu.sukabumikab.go.id'
+    try:
+        u = urllib.parse.urlparse(raw)
+        if u.scheme != 'https' or (u.hostname or '').lower() != REFERENCE_WEBSITE_ALLOWED_HOST:
+            return 'https://dpu.sukabumikab.go.id'
+        # strip fragments/credentials
+        return urllib.parse.urlunparse((u.scheme, REFERENCE_WEBSITE_ALLOWED_HOST, u.path or '/', '', u.query or '', ''))
+    except Exception:
+        return 'https://dpu.sukabumikab.go.id'
+
+class _HTMLTextExtractor(HTMLParser):
+    _SKIP = {'script','style','noscript','header','footer','nav','svg','form','iframe'}
+    def __init__(self):
+        super().__init__()
+        self._skip_depth = 0
+        self.parts = []
+        self.title = ''
+        self._in_title = False
+    def handle_starttag(self, tag, attrs):
+        t = (tag or '').lower()
+        if t in self._SKIP: self._skip_depth += 1
+        if t == 'title': self._in_title = True
+        if t in ('br','p','li','h1','h2','h3','h4','tr','div','section','article'): self.parts.append('\n')
+    def handle_endtag(self, tag):
+        t = (tag or '').lower()
+        if t in self._SKIP and self._skip_depth > 0: self._skip_depth -= 1
+        if t == 'title': self._in_title = False
+    def handle_data(self, data):
+        if not data: return
+        if self._in_title and not self.title: self.title = data.strip()[:180]
+        if self._skip_depth == 0: self.parts.append(data)
+
+def _fetch_reference_page_text(url, max_chars):
+    url = _sanitize_reference_website_url(url)
+    now = time.time()
+    ttl = max(60, int(REFERENCE_WEBSITE_TTL_SECONDS or 900))
+    with _REFERENCE_WEB_LOCK:
+        c = _REFERENCE_WEB_CACHE.get(url)
+        if c and (now - float(c.get('ts') or 0)) < ttl and c.get('text'):
+            return c.get('text'), url, False
+    try:
+        class _NoCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                try:
+                    u = urllib.parse.urlparse(newurl)
+                    if u.scheme != 'https' or (u.hostname or '').lower() != REFERENCE_WEBSITE_ALLOWED_HOST:
+                        return None
+                except Exception:
+                    return None
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+        opener = urllib.request.build_opener(_NoCrossHostRedirect)
+        req = urllib.request.Request(url, headers={'Accept': 'text/html,application/xhtml+xml', 'User-Agent': 'PUPR-AI-Assistant/1.0 (+dpu.sukabumikab.go.id reference)'})
+        with opener.open(req, timeout=6) as resp:
+            ctype = (resp.headers.get('Content-Type') or '').lower()
+            raw = resp.read(400_000)
+        # decode
+        text_html = raw.decode('utf-8', errors='ignore')
+        parser = _HTMLTextExtractor()
+        parser.feed(text_html)
+        body = ' '.join(' '.join(parser.parts).split())
+        title = (parser.title or '').strip()
+        out = (f"Judul: {title}\n" if title else '') + body
+        out = out.strip()[: max(0, int(max_chars or 0))] if max_chars else out.strip()
+        with _REFERENCE_WEB_LOCK:
+            _REFERENCE_WEB_CACHE[url] = {'ts': now, 'text': out}
+            while len(_REFERENCE_WEB_CACHE) > 40:
+                _REFERENCE_WEB_CACHE.pop(next(iter(_REFERENCE_WEB_CACHE)))
+        return out, url, True
+    except Exception as e:
+        msg = repr(e)[:180]
+        with _REFERENCE_WEB_LOCK:
+            c = _REFERENCE_WEB_CACHE.get(url) or {}
+            _REFERENCE_WEB_CACHE[url] = {**c, 'ts': now, 'err': msg}
+        return '', url, False
+
+def build_website_reference_context(question_text):
+    if not REFERENCE_WEBSITE_ENABLED:
+        return '', {}
+    max_chars = max(0, int(REFERENCE_WEBSITE_MAX_CHARS or 0))
+    if max_chars <= 0:
+        return '', {}
+    base = _sanitize_reference_website_url(REFERENCE_WEBSITE_URL)
+    q = (question_text or '').lower()
+    # pick a couple of likely-relevant official pages (best-effort heuristic; still grounded to same domain)
+    paths = ['/', '/profil', '/layanan', '/berita', '/pengumuman', '/kontak']
+    if any(k in q for k in ('kontak','alamat','telp','telepon','email','hubungi','lokasi','jam')):
+        paths = ['/kontak','/profil','/','/layanan']
+    elif any(k in q for k in ('berita','informasi','pengumuman','kegiatan')):
+        paths = ['/berita','/pengumuman','/','/profil']
+    elif any(k in q for k in ('layanan','pengaduan','izin','permohonan','prosedur','syarat')):
+        paths = ['/layanan','/','/profil','/kontak']
+    # de-dupe while preserving order
+    seen=set(); urls=[]
+    for p in paths:
+        u = base.rstrip('/') + (p if p.startswith('/') else '/' + p)
+        u = _sanitize_reference_website_url(u)
+        if u not in seen:
+            seen.add(u); urls.append(u)
+        if len(urls) >= 3: break
+    parts=[]; used=[]
+    budget = max_chars
+    for u in urls:
+        if budget < 250: break
+        txt, fu, fetched = _fetch_reference_page_text(u, min(1800, budget))
+        if txt:
+            parts.append(f"[Sumber: {fu}]\n{txt}")
+            used.append(fu)
+            budget -= len(parts[-1]) + 20
+    if not parts:
+        return '', {'enabled': True, 'base': base, 'sources': [], 'reason': 'no_content'}
+    ctx = "REFERENSI WEBSITE RESMI DPU KABUPATEN SUKABUMI (gunakan sebagai acuan; jangan mengarang):\n\n" + "\n\n---\n\n".join(parts)
+    return ctx[:max_chars], {'enabled': True, 'base': base, 'sources': used}
 
 def apply_dashboard_ai_config(cfg):
     """Apply AI/config limits from dashboard DB payload (pupr.ai_config)."""
     global MAX_HISTORY_MESSAGES, MAX_TEXT_CHARS, MAX_REPLY_CHARS, AI_COOLDOWN_SECONDS, SYSTEM_PROMPT, DEFAULT_TTS_SPEAKER, STT_LANGUAGE
+    global REFERENCE_WEBSITE_ENABLED, REFERENCE_WEBSITE_URL, REFERENCE_WEBSITE_MAX_CHARS, REFERENCE_WEBSITE_TTL_SECONDS
     if not isinstance(cfg, dict):
         return False
     try:
@@ -236,9 +389,20 @@ def apply_dashboard_ai_config(cfg):
         stt = cfg.get('sttLanguage')
         if isinstance(stt, str) and stt.strip():
             STT_LANGUAGE = stt.strip()[:32]
-        spk = cfg.get('ttsDefaultSpeaker')
+        spk = cfg.get('ttsDefaultSpeaker') or cfg.get('ttsVoice') or cfg.get('defaultVoice')
         if isinstance(spk, str) and spk.strip():
             DEFAULT_TTS_SPEAKER = spk.strip()[:64]
+        if isinstance(cfg.get('ttsModel'), str) and cfg.get('ttsModel').strip():
+            globals()['TTS_MODEL'] = cfg.get('ttsModel').strip()[:120]
+        if isinstance(cfg.get('ttsApiUrl'), str) and cfg.get('ttsApiUrl').strip():
+            globals()['TTS_API_URL'] = cfg.get('ttsApiUrl').strip()[:500]
+        # ttsApiKey from dashboard is optional; env .env takes precedence in practice
+        if isinstance(cfg.get('ttsApiKey'), str) and cfg.get('ttsApiKey').strip() and not os.environ.get('TTS_API_KEY'):
+            globals()['TTS_API_KEY'] = cfg.get('ttsApiKey').strip()
+        if 'referenceWebsiteEnabled' in cfg: REFERENCE_WEBSITE_ENABLED = bool(cfg.get('referenceWebsiteEnabled'))
+        if 'referenceWebsiteUrl' in cfg: REFERENCE_WEBSITE_URL = _sanitize_reference_website_url(cfg.get('referenceWebsiteUrl'))
+        if 'referenceWebsiteMaxChars' in cfg: REFERENCE_WEBSITE_MAX_CHARS = max(0, min(12000, int(cfg.get('referenceWebsiteMaxChars') or 0)))
+        if 'referenceWebsiteTtlSeconds' in cfg: REFERENCE_WEBSITE_TTL_SECONDS = max(60, min(86400, int(cfg.get('referenceWebsiteTtlSeconds') or 900)))
         # Trim existing history to new limit
         if MAX_HISTORY_MESSAGES > 0:
             del conversation_history[:-MAX_HISTORY_MESSAGES]
@@ -467,50 +631,92 @@ def stt():
         except Exception:
             pass
 
-import subprocess
-import sys
-from flask import send_file
+from flask import send_file, Response
 
 BASE_DIR = BASE_DIR_PATH
-MODEL_PATH = os.environ.get('TTS_MODEL_PATH', str(Path.home() / 'Library/Caches/g2p_id/checkpoint_1260000-inference.pth'))
-_CONFIG_CANDIDATES = [
-    os.environ.get('TTS_CONFIG_PATH', ''),
-    str(BASE_DIR / 'tts-config.json'),
-    '/private/tmp/scratchpad/TTS-Indonesia-Gratis/config.json',
-]
-CONFIG_PATH = next((p for p in _CONFIG_CANDIDATES if p and Path(p).exists()), _CONFIG_CANDIDATES[1])
-TTS_COMMAND = os.environ.get('TTS_COMMAND', str(Path(sys.executable).parent / 'tts'))
-if not Path(TTS_COMMAND).exists():
-    TTS_COMMAND = os.environ.get('TTS_COMMAND', 'tts')
 TTS_CACHE_DIR = BASE_DIR / '.tts-cache'
 TTS_CACHE_DIR.mkdir(exist_ok=True)
-TTS_READY = Path(MODEL_PATH).exists() and Path(CONFIG_PATH).exists()
+# legacy local Coqui markers (compat)
+MODEL_PATH = os.environ.get('TTS_MODEL_PATH', '')
+CONFIG_PATH = os.environ.get('TTS_CONFIG_PATH', '')
+TTS_READY = bool(TTS_API_URL and TTS_API_KEY)
+
+def _redact_tts_key(url):
+    try:
+        u = urllib.parse.urlparse(url or '')
+        return f"{u.scheme}://{u.netloc}{u.path}" if u.netloc else (url or '')
+    except Exception:
+        return ''
 
 @app.route('/tts', methods=['POST'])
 def tts():
     data = request.get_json(force=True) or {}
-    text = prepare_tts_text(data.get('text', ''))
-    speaker = data.get('speaker') or DEFAULT_TTS_SPEAKER
+    text = sanitize_text(data.get('text', ''))[:MAX_TEXT_CHARS]
+    voice = str((data.get('voice') or data.get('speaker') or DEFAULT_TTS_SPEAKER or 'brian')).strip() or 'brian'
+    model = str((data.get('model') or TTS_MODEL or 'elevenlabs/eleven-v3-conversational')).strip()
     if not text:
         return jsonify({'error': 'no text'}), 400
-    if not TTS_READY:
-        return jsonify({'error': 'TTS model/config tidak ditemukan'}), 503
-    cache_key = hashlib.sha256(f'{speaker}:{text}'.encode('utf-8')).hexdigest()
-    cache_path = TTS_CACHE_DIR / f'{cache_key}.wav'
-    if cache_path.exists():
-        return send_file(cache_path, mimetype='audio/wav', as_attachment=False)
+    if not TTS_API_URL or not TTS_API_KEY:
+        return jsonify({'error': 'TTS remote gateway belum dikonfigurasi (TTS_API_URL/TTS_API_KEY).'}), 503
+
+    cache_key = hashlib.sha256(f'databyte:{model}:{voice}:{text}'.encode('utf-8')).hexdigest()
+    cache_path = TTS_CACHE_DIR / f'{cache_key}.mp3'
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        return send_file(cache_path, mimetype='audio/mpeg', as_attachment=False, download_name='response.mp3')
+
+    payload = _json.dumps({'model': model, 'input': text, 'voice': voice}).encode('utf-8')
+    req = urllib.request.Request(
+        TTS_API_URL,
+        data=payload,
+        headers={
+            'Authorization': 'Bearer ' + TTS_API_KEY,
+            'Content-Type': 'application/json',
+            'Accept': 'audio/mpeg,*/*;q=0.8',
+            'User-Agent': 'PUPR-Backend/1.0 (+local)',
+        },
+        method='POST',
+    )
     try:
-        subprocess.run([
-            TTS_COMMAND, '--text', text, '--model_path', MODEL_PATH,
-            '--config_path', CONFIG_PATH, '--speaker_idx', speaker,
-            '--out_path', str(cache_path)
-        ], check=True, capture_output=True, text=True, timeout=120)
-        return send_file(cache_path, mimetype='audio/wav', as_attachment=False)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        # keep file for send_file; cleanup after response not handled here (temp)
-        pass
+        with urllib.request.urlopen(req, timeout=max(5, float(TTS_TIMEOUT or 60))) as resp:
+            ctype = (resp.headers.get('Content-Type') or '').lower()
+            audio_bytes = resp.read()
+        if not audio_bytes:
+            return jsonify({'error': 'TTS gateway mengembalikan audio kosong'}), 502
+        if 'json' in ctype or (audio_bytes[:1] == b'{' and b'"' in audio_bytes[:80]):
+            try:
+                detail = audio_bytes.decode('utf-8', errors='ignore')[:1200]
+            except Exception:
+                detail = '<non-audio response>'
+            print('[tts] gateway non-audio response', {'voice': voice, 'model': model, 'ctype': ctype, 'url': _redact_tts_key(TTS_API_URL)}, flush=True)
+            return jsonify({'error': 'TTS gateway returned non-audio response', 'detail': detail, 'voice': voice, 'model': model}), 502
+        try:
+            cache_path.write_bytes(audio_bytes)
+        except Exception:
+            pass
+        mimetype = 'audio/mpeg' if ('mpeg' in ctype or 'mp3' in ctype) else (ctype.split(';')[0].strip() or 'audio/mpeg')
+        return Response(audio_bytes, mimetype=mimetype, headers={'Content-Disposition': 'inline; filename="response.mp3"'})
+    except HTTPError as e:
+        err_body = ''
+        try:
+            err_body = e.read().decode('utf-8', errors='ignore')[:1600]
+        except Exception:
+            pass
+        is_cloudflare_block = ('cloudflare' in (err_body or '').lower() and e.code == 403) or ('access denied' in (err_body or '').lower() and e.code == 403)
+        hint = (
+            'DataByte gateway diblokir Cloudflare/WAF (403 Access denied) untuk request dari server ini. '
+            'Backend sudah set User-Agent/Accept eksplisit; jika masih 403, kemungkinan IP/rule WAF atau izin API key/project TTS. '
+            'Cek whitelist IP backend & API key DataByte, lalu restart backend PUPR.'
+        ) if is_cloudflare_block else (
+            'Periksa TTS_API_KEY, model, dan voice untuk gateway DataByte (401/403).'
+        ) if e.code in (401, 403) else None
+        print('[tts] gateway HTTP error', {'voice': voice, 'model': model, 'status': e.code, 'url': _redact_tts_key(TTS_API_URL), 'cloudflare_block': is_cloudflare_block, 'detail_preview': (err_body or '')[:180]}, flush=True)
+        status = 502 if e.code >= 500 else (503 if e.code in (401, 403) else 502)
+        out = {'error': 'TTS gateway request failed', 'detail': err_body or str(e), 'http_status': e.code, 'voice': voice, 'model': model}
+        if hint: out['hint'] = hint
+        return jsonify(out), status
+    except (URLError, Exception) as e:
+        print('[tts] gateway exception', {'voice': voice, 'model': model, 'err': repr(e)}, flush=True)
+        return jsonify({'error': 'TTS gateway request failed', 'detail': repr(e)[:800], 'voice': voice, 'model': model}), 502
 
 def mask_secret(value):
     value = (value or '').strip()
@@ -519,6 +725,22 @@ def mask_secret(value):
     if len(value) <= 8:
         return '*' * len(value)
     return value[:4] + '…' + value[-4:]
+
+
+def _is_loopback_request():
+    try:
+        ip = (request.remote_addr or '').strip()
+        host = (request.host or '').split(':', 1)[0].strip().lower()
+        return ip in ('127.0.0.1', '::1', '::ffff:127.0.0.1') and host in ('127.0.0.1', 'localhost', '[::1]', '::1')
+    except Exception:
+        return False
+
+
+@app.before_request
+def _guard_local_api_routes():
+    # Defense-in-depth: backend binds loopback, but block non-loopback callers if misconfigured/proxied.
+    if request.path in ('/api-status', '/api-config') and not _is_loopback_request():
+        return jsonify({'error': 'Forbidden'}), 403
 
 
 @app.route('/api-status', methods=['GET'])
@@ -545,6 +767,10 @@ def api_status():
             'cooldownSeconds': AI_COOLDOWN_SECONDS,
             'sttLanguage': STT_LANGUAGE,
             'ttsDefaultSpeaker': DEFAULT_TTS_SPEAKER,
+            'ttsProvider': TTS_PROVIDER,
+            'ttsModel': TTS_MODEL,
+            'ttsApiUrl': _redact_tts_key(TTS_API_URL),
+            'ttsApiKeyConfigured': bool(TTS_API_KEY),
             'systemPromptChars': len(SYSTEM_PROMPT or ''),
         },
         'masks': {
@@ -571,7 +797,7 @@ def api_config():
             'cooldownSeconds': AI_COOLDOWN_SECONDS,
         },
         'app': {'language': STT_LANGUAGE},
-        'tts': {'defaultSpeaker': DEFAULT_TTS_SPEAKER},
+        'tts': {'defaultSpeaker': DEFAULT_TTS_SPEAKER, 'provider': TTS_PROVIDER, 'model': TTS_MODEL, 'apiUrl': _redact_tts_key(TTS_API_URL), 'apiKeyConfigured': bool(TTS_API_KEY)},
         'backend': {'host': os.environ.get('BACKEND_HOST') or (APP_CONFIG.get('backend') or {}).get('host') or '127.0.0.1', 'port': int(os.environ.get('BACKEND_PORT') or (APP_CONFIG.get('backend') or {}).get('port') or 8767)},
     })
 
@@ -627,65 +853,82 @@ def ai():
         AI_LOCK.release()
         return jsonify({'text': reply, 'provider': 'cache', 'cached': True, 'cache_source': cached.get('source')})
 
+    # Grounded reference from official website (best-effort; same domain only). Not cached as Q&A.
+    ref_ctx, ref_meta = ('', {})
+    try:
+        ref_ctx, ref_meta = build_website_reference_context(text)
+    except Exception as _re:
+        print('[ref-web] failed:', repr(_re), flush=True)
+
     # Prefer Cloudflare Workers AI when both credentials are configured.
     cf_account = (os.environ.get('CLOUDFLARE_ACCOUNT_ID', '') or '').strip()
     cf_token = (os.environ.get('CLOUDFLARE_API_TOKEN', '') or '').strip()
     if cf_account and cf_token:
         cf_model = (os.environ.get('CLOUDFLARE_AI_MODEL', '@cf/meta/llama-3.3-70b-instruct-fp8-fast') or '@cf/meta/llama-3.3-70b-instruct-fp8-fast').strip()
-        # Defensive: reject corrupted/non-ASCII identifiers (prevents urllib http.client UnicodeEncodeError)
         try:
-            cf_account.encode('ascii')
-            cf_model.encode('ascii')
+            cf_account.encode('ascii'); cf_model.encode('ascii')
         except Exception:
             report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message='invalid_cloudflare_identifier_format')
             AI_LOCK.release()
-            return jsonify({'error': 'Konfigurasi Cloudflare di database tidak valid (Account ID/Model mengandung karakter tidak valid). Buka Dashboard Admin > PUPR API Keys, perbaiki Cloudflare Account ID dan Model, simpan, lalu restart/coba lagi.', 'provider': 'cloudflare'}), 400
-        cf_url = f'https://api.cloudflare.com/client/v4/accounts/{cf_account}/ai/run/{cf_model}'
-        cf_messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-        cf_messages.extend(conversation_history)
-        cf_payload = _json.dumps({'messages': cf_messages}).encode('utf-8')
-        cf_req = urllib.request.Request(
-            cf_url,
-            data=cf_payload,
-            headers={
-                'Authorization': 'Bearer ' + cf_token,
-                'Content-Type': 'application/json'
-            }
-        )
+            return jsonify({'error': 'Konfigurasi Cloudflare di database tidak valid (Account ID/Model). Perbaiki di Admin > PUPR AI Settings/API Keys lalu restart/coba lagi.', 'provider': 'cloudflare'}), 400
+
+        run_tmpl = (CLOUDFLARE_AI_RUN_URL or os.environ.get('CLOUDFLARE_AI_RUN_URL') or 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run').strip()
+        cf_url = run_tmpl.replace('{account_id}', cf_account).replace('{account}', cf_account).replace('$CLOUDFLARE_ACCOUNT_ID', cf_account).rstrip('/')
+        fmt = (CLOUDFLARE_AI_FORMAT or os.environ.get('CLOUDFLARE_AI_FORMAT') or 'auto').strip().lower()
+        use_gemini_contents = (fmt == 'gemini_contents') or (fmt == 'auto' and ('/google/' in (cf_model + cf_url) or cf_model.startswith('google/') or 'gemini' in cf_model.lower()))
+        # Match user curl: base .../ai/run with {"model":..., "input":{"contents"...}} (model in body).
+        # Legacy Workers AI chat models commonly use .../ai/run/{model} with {"messages"...} (no model in body).
+        if use_gemini_contents:
+            if cf_url.endswith('/ai/run/' + cf_model) or cf_url.endswith('/' + cf_model):
+                cf_url = cf_url[: -len('/' + cf_model)].rstrip('/') or cf_url
+            prompt_text = (SYSTEM_PROMPT + ("\n\n" + ref_ctx if ref_ctx else "") + "\n\nPertanyaan warga:\n" + text).strip()
+            cf_payload_obj = {"model": cf_model, "input": {"contents": [{"parts": [{"text": prompt_text}], "role": "user"}]}}
+        else:
+            if cf_url.endswith('/ai/run'):
+                cf_url = cf_url + '/' + cf_model
+            cf_messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+            if ref_ctx: cf_messages.append({'role': 'system', 'content': ref_ctx})
+            cf_messages.extend(conversation_history)
+            cf_payload_obj = {'messages': cf_messages}
+
+        cf_req = urllib.request.Request(cf_url, data=_json.dumps(cf_payload_obj).encode('utf-8'), headers={'Authorization': 'Bearer ' + cf_token, 'Content-Type': 'application/json'})
         try:
             with urllib.request.urlopen(cf_req, timeout=60) as resp:
                 cf_out = _json.loads(resp.read().decode('utf-8'))
-            cf_result = cf_out.get('result', cf_out)
-            cf_reply = sanitize_text(
-                cf_result.get('response')
-                or cf_result.get('text')
-                or cf_result.get('choices', [{}])[0].get('message', {}).get('content', '')
-            )[:MAX_REPLY_CHARS]
+            cf_result = cf_out.get('result', cf_out) if isinstance(cf_out, dict) else {}
+            cf_reply = ''
+            if isinstance(cf_result, dict):
+                cf_reply = sanitize_text(cf_result.get('response') or cf_result.get('text') or cf_result.get('choices', [{}])[0].get('message', {}).get('content', ''))[:MAX_REPLY_CHARS]
+            # Gemini/Google-style responses
+            if not cf_reply and isinstance(cf_out, dict):
+                try:
+                    cands = ((cf_out.get('result') or cf_out).get('candidates') or cf_out.get('candidates') or [])
+                    if cands:
+                        parts = (((cands[0] or {}).get('content') or {}).get('parts') or [])
+                        cf_reply = sanitize_text(''.join([str(p.get('text','')) for p in parts if isinstance(p, dict)]))[:MAX_REPLY_CHARS]
+                except Exception:
+                    pass
+            if not cf_reply and isinstance(cf_out, dict):
+                cf_reply = sanitize_text((cf_out.get('response') or ''))[:MAX_REPLY_CHARS]
             if not cf_reply:
                 raise ValueError('Cloudflare mengembalikan respons kosong')
             remember_message('assistant', cf_reply)
-            cf_usage = {}
-            if isinstance(cf_out, dict):
-                cf_usage = cf_out.get('usage') or (cf_out.get('result') or {}).get('usage') or {}
-            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text=cf_reply, success=True, usage=cf_usage, metadata={'source': 'cloudflare_workers_ai'})
-            store_cached_answer(text, cf_reply, provider='cloudflare', model=cf_model)  # dashboard detects unanswered phrases
+            cf_usage = (cf_out.get('usage') or (cf_out.get('result') or {}).get('usage') or {}) if isinstance(cf_out, dict) else {}
+            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text=cf_reply, success=True, usage=cf_usage, metadata={'source': 'cloudflare_workers_ai', 'format': 'gemini_contents' if use_gemini_contents else 'messages', 'run_url': cf_url, 'ref_sources': (ref_meta or {}).get('sources', [])})
+            store_cached_answer(text, cf_reply, provider='cloudflare', model=cf_model)
             AI_LOCK.release()
-            return jsonify({'text': cf_reply, 'provider': 'cloudflare'})
+            return jsonify({'text': cf_reply, 'provider': 'cloudflare', 'referenceSources': (ref_meta or {}).get('sources', [])})
         except HTTPError as e:
             err_body = ''
-            try:
-                err_body = e.read().decode('utf-8', errors='ignore')[:300]
-            except Exception:
-                pass
-            print('Cloudflare error:', repr(e), flush=True)
-            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message=f'HTTP {e.code} {err_body}', metadata={'http_status': e.code})
+            try: err_body = e.read().decode('utf-8', errors='ignore')[:400]
+            except Exception: pass
+            print('Cloudflare error:', repr(e), err_body[:120], flush=True)
+            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message=f'HTTP {e.code} {err_body}', metadata={'http_status': e.code, 'run_url': cf_url, 'format': 'gemini_contents' if use_gemini_contents else 'messages'})
             if e.code == 429:
-                AI_LOCK.release()
-                return jsonify({'error': 'Cloudflare mencapai batas RPM/quota. Tunggu sebentar sebelum bertanya lagi.'}), 429
+                AI_LOCK.release(); return jsonify({'error': 'Cloudflare mencapai batas RPM/quota. Tunggu sebentar sebelum bertanya lagi.'}), 429
         except Exception as e:
             print('Cloudflare error:', repr(e), flush=True)
-            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message=str(e))
-        # Cloudflare failed; flag question for admin review (keeps DB record of unanswered attempt)
+            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message=str(e), metadata={'run_url': cf_url, 'format': 'gemini_contents' if use_gemini_contents else 'messages'})
         store_cached_answer(text, '', provider='cloudflare', model=cf_model, unanswered=True, metadata={'reason': 'provider_error'})
 
     # Fallback Gemini if key present
@@ -696,8 +939,9 @@ def ai():
         contents = []
         for message in conversation_history:
             contents.append({'role': 'user' if message['role'] == 'user' else 'model', 'parts': [{'text': message['content']}]})
+        gemini_system = SYSTEM_PROMPT + ("\n\n" + ref_ctx if ref_ctx else "")
         payload = _json.dumps({
-            'system_instruction': {'parts': [{'text': SYSTEM_PROMPT}]},
+            'system_instruction': {'parts': [{'text': gemini_system}]},
             'contents': contents
         }).encode('utf-8')
         req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
@@ -712,10 +956,10 @@ def ai():
                 'completion_tokens': int(usage_meta.get('candidatesTokenCount') or 0),
                 'total_tokens': int(usage_meta.get('totalTokenCount') or 0),
             }
-            report_token_usage('gemini', model=gemini_model, prompt_text=text, response_text=reply, success=True, usage=gemini_usage, metadata={'source': 'gemini_generate_content'})
+            report_token_usage('gemini', model=gemini_model, prompt_text=text, response_text=reply, success=True, usage=gemini_usage, metadata={'source': 'gemini_generate_content', 'ref_sources': (ref_meta or {}).get('sources', [])})
             store_cached_answer(text, reply, provider='gemini', model=gemini_model)
             AI_LOCK.release()
-            return jsonify({'text': reply, 'provider': 'gemini'})
+            return jsonify({'text': reply, 'provider': 'gemini', 'referenceSources': (ref_meta or {}).get('sources', [])})
         except HTTPError as e:
             err_body = ''
             try:
@@ -747,9 +991,13 @@ def ai():
             }
         }), 400
     openai_model = 'gpt-4o-mini'
+    oai_messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+    if ref_ctx:
+        oai_messages.append({'role': 'system', 'content': ref_ctx})
+    oai_messages.extend(conversation_history)
     payload = _json.dumps({
         'model': openai_model,
-        'messages': [{'role': 'system', 'content': SYSTEM_PROMPT}, *conversation_history]
+        'messages': oai_messages
     }).encode('utf-8')
     req = urllib.request.Request(
         'https://api.openai.com/v1/chat/completions',
@@ -764,10 +1012,10 @@ def ai():
             out = _json.loads(resp.read().decode('utf-8'))
         reply = sanitize_text(out['choices'][0]['message']['content'])[:MAX_REPLY_CHARS]
         remember_message('assistant', reply)
-        report_token_usage('openai', model=openai_model, prompt_text=text, response_text=reply, success=True, usage=out.get('usage') or {}, metadata={'source': 'openai_chat_completions'})
+        report_token_usage('openai', model=openai_model, prompt_text=text, response_text=reply, success=True, usage=out.get('usage') or {}, metadata={'source': 'openai_chat_completions', 'ref_sources': (ref_meta or {}).get('sources', [])})
         store_cached_answer(text, reply, provider='openai', model=openai_model)
         AI_LOCK.release()
-        return jsonify({'text': reply, 'provider': 'openai'})
+        return jsonify({'text': reply, 'provider': 'openai', 'referenceSources': (ref_meta or {}).get('sources', [])})
     except HTTPError as e:
         err_body = ''
         try:

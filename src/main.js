@@ -36,7 +36,7 @@ function applyAppBranding(config) {
 applyAppBranding(APP_CONFIG);
 configureSpeechSynthesis({
   backendBaseUrl: BACKEND_BASE_URL,
-  defaultSpeaker: TTS_CFG.defaultSpeaker || 'wibowo',
+  defaultSpeaker: TTS_CFG.defaultVoice || TTS_CFG.defaultSpeaker || 'brian',
   rate: TTS_CFG.rate ?? 0.88,
   pitch: TTS_CFG.pitch ?? 1.0,
   volume: TTS_CFG.volume ?? 1.0,
@@ -201,7 +201,7 @@ function handleFinal(text) {
   speakEcho(text);
 }
 
-function speakEcho(text) {
+function speakEcho(text, opts = {}) {
   if (!text) {
     setState(STATE.IDLE);
     if (sessionActive) setTimeout(() => { startRecordingFlow(); }, 300);
@@ -210,12 +210,18 @@ function speakEcho(text) {
   }
   const token = ++speakToken;
   const myFlow = flowToken;
-  UI.setSpokenText(text);
-  showAppBubble(text);
+  const hideText = !!opts.hideText;
+  if (hideText) {
+    UI.setSpokenText('');
+    showAppBubble('');
+  } else {
+    UI.setSpokenText(text);
+    showAppBubble(text);
+  }
   setState(STATE.SPEAKING);
 
   const voiceSelect = document.getElementById('voiceSelect');
-  const selectedSpeaker = (voiceSelect && voiceSelect.value) ? voiceSelect.value : (TTS_CFG.defaultSpeaker || 'wibowo');
+  const selectedSpeaker = (voiceSelect && voiceSelect.value) ? voiceSelect.value : (TTS_CFG.defaultVoice || TTS_CFG.defaultSpeaker || 'brian');
   const result = speakText(text, {
     lang: APP.language || 'id-ID',
     rate: TTS_CFG.rate ?? 0.88,
@@ -578,9 +584,8 @@ async function startRecordingFlow() {
       const reply = await askAI(text);
       if (!sessionActive || myFlow !== flowToken) return;
       const toSpeak = reply || text; // fallback echo if AI unavailable
-      if (!reply) showAppBubble(toSpeak);
-      else showAppBubble(reply);
-      speakEcho(toSpeak); // onEnd continues to next question while sessionActive
+      showAppBubble(''); // hide hasil jawaban
+      speakEcho(toSpeak, { hideText: true }); // onEnd continues to next question while sessionActive
     } else {
       // no speech detected -> keep waiting for next question
       showAppBubble('Saya belum mendengar pertanyaan. Silakan coba lagi.');
@@ -598,6 +603,50 @@ async function startRecordingFlow() {
     // recover: keep session active and listen again
     setTimeout(() => { if (sessionActive && myFlow === flowToken) startRecordingFlow(); }, 1200);
   }
+}
+
+let welcomeAudio = null;
+function playWelcomeSound() {
+  return new Promise((resolve) => {
+    const token = ++speakToken;
+    const myFlow = flowToken;
+    try { cancelSpeech(); } catch {}
+    try { if (welcomeAudio) { welcomeAudio.pause(); welcomeAudio.currentTime = 0; } } catch {}
+    const audio = new Audio('./public/selamat_datang.mp3');
+    welcomeAudio = audio;
+    UI.setSpokenText(APP.greeting || 'Selamat datang');
+    showAppBubble(APP.greeting || 'Selamat datang di Dinas Pekerjaan Umum Kabupaten Sukabumi');
+    setState(STATE.SPEAKING);
+
+    let settled = false;
+    const after = (ok) => {
+      if (settled) return;
+      settled = true;
+      if (token !== speakToken || myFlow !== flowToken) { resolve(ok); return; }
+      try { avatar.setActiveVideo('standby'); } catch {}
+      UI.setSpokenText(APP.greeting || '');
+      setState(STATE.IDLE);
+      if (sessionActive) {
+        setTimeout(() => { if (sessionActive && myFlow === flowToken) startRecordingFlow(); }, 500);
+      }
+      resolve(ok);
+    };
+
+    audio.onloadedmetadata = () => {
+      if (token !== speakToken || myFlow !== flowToken) return;
+      const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : Math.max(1.2, (APP.greeting || '').length / 10);
+      try { avatar.setSpeechText(APP.greeting || 'selamat datang', dur); } catch {}
+    };
+    audio.onplay = () => {
+      if (token !== speakToken || myFlow !== flowToken) return;
+      try { avatar.setActiveVideo('speaking'); } catch {}
+    };
+    audio.onended = () => after(true);
+    audio.onerror = () => after(false);
+
+    const p = audio.play();
+    if (p && typeof p.catch === 'function') p.catch(() => after(false));
+  });
 }
 
 function setMulaiButton(running) {
@@ -630,17 +679,21 @@ function finishSession() {
 const btnMulai = document.getElementById('btnMulai');
 if (btnMulai) {
   setMulaiButton(false);
-  btnMulai.addEventListener('click', () => {
+  btnMulai.addEventListener('click', async () => {
     if (sessionActive) {
       finishSession();
       return;
     }
-    // Start conversation session: greeting, then keep listening for next questions until "Selesai"
+    // Start conversation session: play welcome sound, then keep listening until "Selesai"
     sessionActive = true;
     recordAfterSpeak = false; // controlled by sessionActive flow
     UI.showError('');
     setMulaiButton(true);
-    speakEcho(APP.greeting || 'selamat datang');
+    const ok = await playWelcomeSound();
+    if (!ok && sessionActive) {
+      // fallback to TTS greeting if mp3 missing/blocked
+      speakEcho(APP.greeting || 'selamat datang');
+    }
   });
 }
 
