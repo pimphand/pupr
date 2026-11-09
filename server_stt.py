@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import tempfile
 import hashlib
 import json as _json
@@ -38,39 +39,100 @@ def load_env_file(path, override=False):
 
 
 # Load local env fallback first (process/env vars still take precedence over file values below)
-BASE_DIR_PATH = Path(__file__).resolve().parent
-load_env_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'), override=False)
+# Packaged/Windows: config/.env/.tts-cache should live in a writable per-user dir, not bundled app resources.
+def _resolve_app_root():
+    env_root = (os.environ.get('PUPR_APP_ROOT') or '').strip()
+    if env_root and os.path.isdir(env_root):
+        return Path(env_root).resolve()
+    return Path(__file__).resolve().parent
+
+def _resolve_data_dir():
+    # Explicit override (Electron passes PUPR_USER_DATA=app.getPath('userData'))
+    for k in ('PUPR_USER_DATA', 'PUPR_DATA_DIR'):
+        v = (os.environ.get(k) or '').strip()
+        if v:
+            try:
+                p = Path(v); p.mkdir(parents=True, exist_ok=True); return p
+            except Exception:
+                pass
+    if os.name == 'nt':
+        base = os.environ.get('APPDATA') or os.path.expanduser('~')
+        p = Path(base) / 'ResepsionisVirtualPUPR'; p.mkdir(parents=True, exist_ok=True); return p
+    p = Path.home() / '.resepsionis-virtual-pupr'; p.mkdir(parents=True, exist_ok=True); return p
+
+APP_ROOT = _resolve_app_root()
+DATA_DIR = _resolve_data_dir()
+BASE_DIR_PATH = APP_ROOT  # compat name used later
+# Load env from data dir first (user config), then app root (dev fallback). Never override existing env.
+load_env_file(str(DATA_DIR / '.env'), override=False)
+load_env_file(str(APP_ROOT / '.env'), override=False)
 
 # Load PUPR API keys from Dashboard DB (preferred source). Dashboard stores them in public.app_settings.
-DASHBOARD_CONFIG_URL = os.environ.get('DASHBOARD_CONFIG_URL', 'http://localhost:4321/api/pupr/config')
-DASHBOARD_USAGE_URL = os.environ.get('DASHBOARD_USAGE_URL', '')
-if not DASHBOARD_USAGE_URL and DASHBOARD_CONFIG_URL.endswith('/api/pupr/config'):
-    DASHBOARD_USAGE_URL = DASHBOARD_CONFIG_URL[:-len('/api/pupr/config')] + '/api/pupr/usage'
-elif not DASHBOARD_USAGE_URL:
-    DASHBOARD_USAGE_URL = 'http://localhost:4321/api/pupr/usage'
-DASHBOARD_CONVERSATION_URL = os.environ.get('DASHBOARD_CONVERSATION_URL', '')
-if not DASHBOARD_CONVERSATION_URL and DASHBOARD_CONFIG_URL.endswith('/api/pupr/config'):
-    DASHBOARD_CONVERSATION_URL = DASHBOARD_CONFIG_URL[:-len('/api/pupr/config')] + '/api/pupr/conversation'
-elif not DASHBOARD_CONVERSATION_URL:
-    DASHBOARD_CONVERSATION_URL = 'http://localhost:4321/api/pupr/conversation'
-DASHBOARD_CONFIG_TOKEN = os.environ.get('DASHBOARD_CONFIG_TOKEN') or os.environ.get('PUPR_CONFIG_TOKEN') or ''
-DASHBOARD_CONFIG_TIMEOUT = float(os.environ.get('DASHBOARD_CONFIG_TIMEOUT', '2.5'))
+_is_frozen = bool(getattr(sys, 'frozen', False))
 
+def _load_backend_cfg_hint():
+    # Lightweight read of app.config.json backend dashboard settings (works for packaged/userData .env/config setups).
+    for cp in [os.environ.get('APP_CONFIG_PATH'), str(DATA_DIR / 'app.config.json'), str(APP_ROOT / 'app.config.json'), os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.config.json')]:
+        try:
+            if cp and os.path.exists(cp):
+                with open(cp, 'r', encoding='utf-8') as f:
+                    cfg = _json.load(f) or {}
+                b = (cfg.get('backend') or {}) if isinstance(cfg, dict) else {}
+                if isinstance(b, dict): return b
+        except Exception:
+            continue
+    return {}
+
+_backend_hint = _load_backend_cfg_hint()
+_default_dash = '' if _is_frozen else 'http://localhost:4321/api/pupr/config'
+# Precedence: process env (explicit) > app.config.json backend.dashboardConfigUrl > dev default (localhost) > empty when frozen.
+DASHBOARD_CONFIG_URL = (os.environ.get('DASHBOARD_CONFIG_URL') or (_backend_hint.get('dashboardConfigUrl') or '') or _default_dash).strip()
+DASHBOARD_USAGE_URL = (os.environ.get('DASHBOARD_USAGE_URL') or (_backend_hint.get('dashboardUsageUrl') or '') or '').strip()
+DASHBOARD_CONVERSATION_URL = (os.environ.get('DASHBOARD_CONVERSATION_URL') or (_backend_hint.get('dashboardConversationUrl') or '') or '').strip()
+DASHBOARD_CONFIG_TOKEN = (os.environ.get('DASHBOARD_CONFIG_TOKEN') or os.environ.get('PUPR_CONFIG_TOKEN') or (_backend_hint.get('dashboardConfigToken') or '') or '').strip()
+try:
+    DASHBOARD_CONFIG_TIMEOUT = float(os.environ.get('DASHBOARD_CONFIG_TIMEOUT') or (_backend_hint.get('dashboardConfigTimeout') or 4.0))
+except Exception:
+    DASHBOARD_CONFIG_TIMEOUT = 4.0
+
+def _derive_dashboard_urls():
+    global DASHBOARD_USAGE_URL, DASHBOARD_CONVERSATION_URL
+    base = (DASHBOARD_CONFIG_URL or '').strip().rstrip('/')
+    if not base:
+        DASHBOARD_USAGE_URL = ''; DASHBOARD_CONVERSATION_URL = ''; return
+    if base.endswith('/api/pupr/config'):
+        root = base[:-len('/api/pupr/config')]
+        if not DASHBOARD_USAGE_URL: DASHBOARD_USAGE_URL = root + '/api/pupr/usage'
+        if not DASHBOARD_CONVERSATION_URL: DASHBOARD_CONVERSATION_URL = root + '/api/pupr/conversation'
+    # Dev-only localhost convenience: if still missing and not frozen, fall back to localhost (never for remote/custom URLs)
+    if not _is_frozen:
+        if not DASHBOARD_USAGE_URL and 'localhost' in base or '127.0.0.1' in base or '[::1]' in base:
+            pass
+_derive_dashboard_urls()
+
+
+def _is_loopback_dashboard_url(url):
+    try:
+        h = (urllib.parse.urlparse(url or '').hostname or '').lower()
+        return h in ('localhost', '127.0.0.1', '::1')
+    except Exception:
+        return ('localhost' in (url or '') or '127.0.0.1' in (url or ''))
 
 def _dashboard_url_fallbacks(url):
-    # Astro dev on macOS may bind IPv6 localhost only; try localhost/127.0.0.1/[::1] variants.
+    # ONLY for local dev loopback (Astro may bind IPv6 localhost only). Never mutate remote/production URLs.
     if not url:
         return []
     out = [url]
-    if '://127.0.0.1' in url:
-        out.append(url.replace('://127.0.0.1', '://localhost'))
-        out.append(url.replace('://127.0.0.1', '://[::1]'))
-    elif '://localhost' in url:
-        out.append(url.replace('://localhost', '://127.0.0.1'))
-        out.append(url.replace('://localhost', '://[::1]'))
-    elif '://[::1]' in url:
-        out.append(url.replace('://[::1]', '://localhost'))
-        out.append(url.replace('://[::1]', '://127.0.0.1'))
+    if _is_loopback_dashboard_url(url):
+        if '://127.0.0.1' in url:
+            out.append(url.replace('://127.0.0.1', '://localhost'))
+            out.append(url.replace('://127.0.0.1', '://[::1]'))
+        elif '://localhost' in url:
+            out.append(url.replace('://localhost', '://127.0.0.1'))
+            out.append(url.replace('://localhost', '://[::1]'))
+        elif '://[::1]' in url:
+            out.append(url.replace('://[::1]', '://localhost'))
+            out.append(url.replace('://[::1]', '://127.0.0.1'))
     # dedupe preserve order
     seen = set(); res = []
     for u in out:
@@ -186,13 +248,29 @@ FALLBACK_SYSTEM_PROMPT = (
 )
 
 
+DASHBOARD_BROWSER_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36'
+
+def _dashboard_json_headers(extra=None):
+    headers = {
+        'Accept': 'application/json',
+        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        'User-Agent': DASHBOARD_BROWSER_USER_AGENT,
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'cross-site',
+    }
+    if extra:
+        headers.update(extra)
+    if DASHBOARD_CONFIG_TOKEN:
+        headers['x-pupr-config-token'] = DASHBOARD_CONFIG_TOKEN
+    return headers
+
+
 def fetch_dashboard_pupr_config():
     """Fetch PUPR config (API keys + AI config) from dashboard API/DB."""
     if not DASHBOARD_CONFIG_URL:
         return None
-    headers = {'Accept': 'application/json'}
-    if DASHBOARD_CONFIG_TOKEN:
-        headers['x-pupr-config-token'] = DASHBOARD_CONFIG_TOKEN
+    headers = _dashboard_json_headers()
     last_err = None
     for url in _dashboard_url_fallbacks(DASHBOARD_CONFIG_URL):
         try:
@@ -203,18 +281,39 @@ def fetch_dashboard_pupr_config():
                 if url != DASHBOARD_CONFIG_URL:
                     os.environ['DASHBOARD_CONFIG_URL_EFFECTIVE'] = url
                 return payload
+        except HTTPError as e:
+            body = ''
+            try: body = e.read().decode('utf-8', errors='ignore')[:350]
+            except Exception: pass
+            last_err = f"HTTP {e.code} {body or getattr(e,'reason','')}".strip()
+            continue
         except Exception as e:
-            last_err = e
+            last_err = repr(e)
             continue
     if last_err is not None:
-        print('[config] Dashboard PUPR config not loaded:', repr(last_err), 'urls=', _dashboard_url_fallbacks(DASHBOARD_CONFIG_URL), flush=True)
+        error_text = str(last_err)
+        if 'browser_signature_banned' in error_text or 'error 1010' in error_text.lower():
+            hint = ' Cloudflare is blocking the Python HTTP client signature (1010), not the PUPR service token.'
+        elif '403' in error_text or 'PUPR_CONFIG_TOKEN' in error_text or 'Unauthorized' in error_text:
+            hint = ' Set matching DASHBOARD_CONFIG_TOKEN/PUPR_CONFIG_TOKEN if remote service requires it.'
+        else:
+            hint = ''
+        print('[config] Dashboard PUPR config not loaded:', last_err, 'url=', DASHBOARD_CONFIG_URL, 'urls_tried=', _dashboard_url_fallbacks(DASHBOARD_CONFIG_URL), hint, flush=True)
     return None
 
 
 def load_app_config():
-    # Base fallback -> local app.config.json (compat) -> dashboard API/DB runtime overrides happen in load_dashboard_pupr_keys/apply_dashboard_ai_config.
+    # Base fallback -> app.config.json (userData/packaged/local) -> dashboard API/DB runtime overrides happen in load_dashboard_pupr_keys/apply_dashboard_ai_config.
     cfg = _json.loads(_json.dumps(FALLBACK_APP_CONFIG))  # deep-ish copy of simple dict
-    cfg_path = os.environ.get('APP_CONFIG_PATH') or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.config.json')
+    candidates = []
+    if os.environ.get('APP_CONFIG_PATH'):
+        candidates.append(os.environ.get('APP_CONFIG_PATH'))
+    try:
+        candidates.extend([str(DATA_DIR / 'app.config.json'), str(APP_ROOT / 'app.config.json')])
+    except Exception:
+        pass
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.config.json'))
+    cfg_path = next((p for p in candidates if p and os.path.exists(p)), candidates[-1])
     try:
         if os.path.exists(cfg_path):
             with open(cfg_path, 'r', encoding='utf-8') as f:
@@ -448,9 +547,7 @@ def _cache_put(norm, payload):
 def _dashboard_post_json(url, payload):
     if not url:
         return None
-    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
-    if DASHBOARD_CONFIG_TOKEN:
-        headers['x-pupr-config-token'] = DASHBOARD_CONFIG_TOKEN
+    headers = _dashboard_json_headers({'Content-Type': 'application/json'})
     last_err = None
     for u in _dashboard_url_fallbacks(url):
         try:
@@ -579,9 +676,7 @@ def report_token_usage(provider, model=None, prompt_text='', response_text='', s
     base_url = os.environ.get('DASHBOARD_USAGE_URL_EFFECTIVE') or DASHBOARD_USAGE_URL
     if not base_url:
         return
-    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
-    if DASHBOARD_CONFIG_TOKEN:
-        headers['x-pupr-config-token'] = DASHBOARD_CONFIG_TOKEN
+    headers = _dashboard_json_headers({'Content-Type': 'application/json'})
     last_err = None
     for url in _dashboard_url_fallbacks(base_url):
         try:
@@ -633,9 +728,15 @@ def stt():
 
 from flask import send_file, Response
 
-BASE_DIR = BASE_DIR_PATH
-TTS_CACHE_DIR = BASE_DIR / '.tts-cache'
-TTS_CACHE_DIR.mkdir(exist_ok=True)
+BASE_DIR = APP_ROOT
+# Writable cache (packaged apps often cannot write to bundled resources/Program Files)
+_tts_cache_env = (os.environ.get('TTS_CACHE_DIR') or '').strip()
+try:
+    TTS_CACHE_DIR = Path(_tts_cache_env) if _tts_cache_env else (DATA_DIR / '.tts-cache')
+    TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    TTS_CACHE_DIR = Path(tempfile.gettempdir()) / 'pupr-tts-cache'
+    TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # legacy local Coqui markers (compat)
 MODEL_PATH = os.environ.get('TTS_MODEL_PATH', '')
 CONFIG_PATH = os.environ.get('TTS_CONFIG_PATH', '')
@@ -929,7 +1030,11 @@ def ai():
         except Exception as e:
             print('Cloudflare error:', repr(e), flush=True)
             report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message=str(e), metadata={'run_url': cf_url, 'format': 'gemini_contents' if use_gemini_contents else 'messages'})
-        store_cached_answer(text, '', provider='cloudflare', model=cf_model, unanswered=True, metadata={'reason': 'provider_error'})
+        # Don't mark unanswered for infra/provider failures; keep user-facing response clean (frontend will skip TTS).
+        try:
+            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message='provider_error_no_tts')
+        except Exception:
+            pass
 
     # Fallback Gemini if key present
     gkey = os.environ.get('GEMINI_API_KEY', '')

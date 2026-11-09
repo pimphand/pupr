@@ -36,8 +36,8 @@
       </div>
     </header>
 
-    <div id="appBubble" style="display:none;position:fixed;top:18%;left:8%;max-width:40%;background:rgba(6,20,40,0.85);border:1px solid rgba(0,229,255,0.55);border-radius:16px;padding:14px 20px;color:#e6f7ff;font-family:Inter,sans-serif;font-size:16px;z-index:20;box-shadow:0 0 20px rgba(0,229,255,0.3);text-align:left;"></div>
-    <div id="userBubble" style="display:none;position:fixed;top:18%;right:8%;max-width:40%;background:rgba(20,40,60,0.85);border:1px solid rgba(255,255,255,0.3);border-radius:16px;padding:14px 20px;color:#fff;font-family:Inter,sans-serif;font-size:16px;z-index:20;box-shadow:0 0 12px rgba(0,0,0,0.3);text-align:right;"></div>
+    <div id="appBubble" style="display:none;position:fixed;bottom:8%;left:50%;transform:translateX(-50%);width:0;height:0;overflow:hidden;opacity:0;pointer-events:none;background:rgba(6,20,40,0.85);border:1px solid rgba(0,229,255,0.55);border-radius:16px;padding:0;color:#e6f7ff;font-family:Inter,sans-serif;font-size:16px;line-height:1.55;z-index:20;box-shadow:0 0 20px rgba(0,229,255,0.3);text-align:left;" aria-hidden="true"></div>
+    <div id="userBubble" style="display:none;position:fixed;top:18%;right:8%;width:min(640px,40%);max-height:46vh;overflow:auto;overscroll-behavior:contain;background:rgba(20,40,60,0.85);border:1px solid rgba(255,255,255,0.3);border-radius:16px;padding:14px 20px;color:#fff;font-family:Inter,sans-serif;font-size:16px;line-height:1.55;z-index:20;box-shadow:0 0 12px rgba(0,0,0,0.3);text-align:right;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab;" aria-label="Teks pertanyaan (tekan dan seret dengan mouse atau sentuhan untuk memindahkan)"></div>
     <main class="main" style="grid-template-columns:1fr">
       <section class="avatar-panel">
         <div class="holo-frame">

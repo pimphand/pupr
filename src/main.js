@@ -84,38 +84,165 @@ function showUserBubble(text) {
   b.style.display = text ? 'block' : 'none';
 }
 
-// ---------- Draggable chat bubble ----------
-(function makeBubbleDraggable() {
-  const bubble = document.getElementById('appBubble');
+// ---------- Draggable question bubble ----------
+(function makeQuestionBubbleDraggable() {
+  const bubble = document.getElementById('userBubble');
   if (!bubble) return;
+  const KEY = 'pupr-question-bubble-position';
   let dragging = false;
   let offsetX = 0, offsetY = 0;
+  let moved = false;
+  const clampPosition = (left, top) => {
+    const rect = bubble.getBoundingClientRect();
+    return {
+      left: Math.min(Math.max(left, 0), Math.max(0, window.innerWidth - rect.width)),
+      top: Math.min(Math.max(top, 0), Math.max(0, window.innerHeight - rect.height)),
+    };
+  };
+  const clampCurrent = () => {
+    const rect = bubble.getBoundingClientRect();
+    const pos = clampPosition(rect.left, rect.top);
+    bubble.style.left = pos.left + 'px';
+    bubble.style.top = pos.top + 'px';
+    bubble.style.right = 'auto';
+    bubble.style.bottom = 'auto';
+    bubble.style.transform = 'none';
+    return pos;
+  };
+  const savePosition = () => {
+    try {
+      const rect = bubble.getBoundingClientRect();
+      localStorage.setItem(KEY, JSON.stringify({ left: rect.left, top: rect.top }));
+    } catch {}
+  };
+  const restorePosition = () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
+      if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+        bubble.style.left = saved.left + 'px';
+        bubble.style.top = saved.top + 'px';
+        bubble.style.right = 'auto';
+        bubble.style.bottom = 'auto';
+        bubble.style.transform = 'none';
+        requestAnimationFrame(clampCurrent);
+      }
+    } catch {}
+  };
   const start = (e) => {
-    const pt = e.touches ? e.touches[0] : e;
+    if (!bubble || bubble.style.display === 'none') return;
     const rect = bubble.getBoundingClientRect();
     dragging = true;
-    offsetX = pt.clientX - rect.left;
-    offsetY = pt.clientY - rect.top;
-    bubble.style.transform = 'none';
-    bubble.style.left = rect.left + 'px';
-    bubble.style.top = rect.top + 'px';
+    moved = false;
+    offsetX = e.clientX - rect.left;
+    offsetY = e.clientY - rect.top;
     bubble.style.cursor = 'grabbing';
+    bubble.setPointerCapture?.(e.pointerId);
     e.preventDefault();
   };
   const move = (e) => {
     if (!dragging) return;
-    const pt = e.touches ? e.touches[0] : e;
-    bubble.style.left = (pt.clientX - offsetX) + 'px';
-    bubble.style.top = (pt.clientY - offsetY) + 'px';
+    moved = true;
+    const pos = clampPosition(e.clientX - offsetX, e.clientY - offsetY);
+    bubble.style.left = pos.left + 'px';
+    bubble.style.top = pos.top + 'px';
+    bubble.style.right = 'auto';
+    bubble.style.bottom = 'auto';
+    bubble.style.transform = 'none';
   };
-  const end = () => { dragging = false; bubble.style.cursor = 'grab'; };
-  bubble.style.cursor = 'grab';
-  bubble.addEventListener('mousedown', start);
-  bubble.addEventListener('touchstart', start, { passive: false });
-  window.addEventListener('mousemove', move);
-  window.addEventListener('touchmove', move, { passive: false });
-  window.addEventListener('mouseup', end);
-  window.addEventListener('touchend', end);
+  const end = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    bubble.style.cursor = 'grab';
+    bubble.releasePointerCapture?.(e.pointerId);
+    if (moved) savePosition();
+  };
+  bubble.addEventListener('pointerdown', start);
+  window.addEventListener('pointermove', move, { passive: false });
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  restorePosition();
+  clampCurrent();
+})();
+
+// ---------- Draggable answer bubble (bottom-center default) ----------
+(function makeBubbleDraggable() {
+  const bubble = document.getElementById('appBubble');
+  if (!bubble) return;
+  const KEY = 'pupr-answer-bubble-position';
+  let dragging = false;
+  let offsetX = 0, offsetY = 0;
+  let moved = false;
+  const clampPosition = (left, top) => {
+    const rect = bubble.getBoundingClientRect();
+    return {
+      left: Math.min(Math.max(left, 0), Math.max(0, window.innerWidth - rect.width)),
+      top: Math.min(Math.max(top, 0), Math.max(0, window.innerHeight - rect.height)),
+    };
+  };
+  const clampCurrent = () => {
+    const rect = bubble.getBoundingClientRect();
+    const pos = clampPosition(rect.left, rect.top);
+    bubble.style.left = pos.left + 'px';
+    bubble.style.top = pos.top + 'px';
+    bubble.style.right = 'auto';
+    bubble.style.bottom = 'auto';
+    bubble.style.transform = 'none';
+    return pos;
+  };
+  const savePosition = () => {
+    try {
+      const rect = bubble.getBoundingClientRect();
+      localStorage.setItem(KEY, JSON.stringify({ left: rect.left, top: rect.top }));
+    } catch {}
+  };
+  const restorePosition = () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(KEY) || 'null');
+      if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+        bubble.style.left = saved.left + 'px';
+        bubble.style.top = saved.top + 'px';
+        bubble.style.right = 'auto';
+        bubble.style.bottom = 'auto';
+        bubble.style.transform = 'none';
+        requestAnimationFrame(clampCurrent);
+      }
+    } catch {}
+  };
+  const start = (e) => {
+    if (!bubble || bubble.style.display === 'none') return;
+    const rect = bubble.getBoundingClientRect();
+    dragging = true;
+    moved = false;
+    offsetX = e.clientX - rect.left;
+    offsetY = e.clientY - rect.top;
+    bubble.style.cursor = 'grabbing';
+    bubble.setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+  };
+  const move = (e) => {
+    if (!dragging) return;
+    moved = true;
+    const pos = clampPosition(e.clientX - offsetX, e.clientY - offsetY);
+    bubble.style.left = pos.left + 'px';
+    bubble.style.top = pos.top + 'px';
+    bubble.style.right = 'auto';
+    bubble.style.bottom = 'auto';
+    bubble.style.transform = 'none';
+  };
+  const end = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    bubble.style.cursor = 'grab';
+    bubble.releasePointerCapture?.(e.pointerId);
+    if (moved) savePosition();
+  };
+  bubble.addEventListener('pointerdown', start);
+  window.addEventListener('pointermove', move, { passive: false });
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  window.addEventListener('resize', clampCurrent);
+  restorePosition();
+  clampCurrent();
 })();
 
 // ---------- Waveform (visual status) ----------
@@ -241,7 +368,7 @@ function speakEcho(text, opts = {}) {
     onEnd: () => {
       if (token !== speakToken || myFlow !== flowToken) return;
       avatar.setActiveVideo('standby');
-      UI.setSpokenText(text);
+      if (!hideText) UI.setSpokenText(text);
       setState(STATE.IDLE);
       // After speaking: if session still active, wait for the next question; otherwise honor legacy autoListen.
       if (sessionActive) {
@@ -539,7 +666,7 @@ async function transcribe(wavBlob) {
 }
 
 async function askAI(userText) {
-  if (FEATURES.aiEnabled === false) return null;
+  if (FEATURES.aiEnabled === false) return { ok: false, noTts: true, reason: 'disabled' };
   try {
     const res = await fetch(AI_URL, {
       method: 'POST',
@@ -547,11 +674,15 @@ async function askAI(userText) {
       body: JSON.stringify({ text: userText })
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `AI gagal memproses jawaban (HTTP ${res.status})`);
-    return (data && data.text) ? data.text : null;
+    if (!res.ok) {
+      const msg = (data && data.error) ? String(data.error) : `AI gagal memproses jawaban (HTTP ${res.status})`;
+      return { ok: false, noTts: true, error: msg, status: res.status };
+    }
+    const text = (data && data.text) ? String(data.text).trim() : '';
+    if (!text) return { ok: false, noTts: true, error: 'AI tidak mengembalikan jawaban.' };
+    return { ok: true, text };
   } catch (e) {
-    showAppBubble(e.message || 'AI tidak tersedia.');
-    return null;
+    return { ok: false, noTts: true, error: (e && e.message) ? e.message : 'AI tidak tersedia.' };
   }
 }
 
@@ -561,12 +692,11 @@ async function startRecordingFlow() {
   setState(STATE.LISTENING);
   UI.setMic(true);
   avatar.setActiveVideo('standby');
-  showAppBubble('Silakan bertanya...');
-  const t0 = Date.now();
+  // Listening text is hidden by design (only window UI / mic indicator remains).
+  showAppBubble('');
   const iv = setInterval(() => {
     if (!sessionActive || myFlow !== flowToken) { clearInterval(iv); return; }
-    const sec = ((Date.now() - t0) / 1000).toFixed(1);
-    showAppBubble('Mendengarkan... ' + sec + 's');
+    showAppBubble('');
   }, 500);
   try {
     const wav = await recordUntilSilence(1500);
@@ -575,17 +705,26 @@ async function startRecordingFlow() {
     UI.setMic(false);
     setState(STATE.PROCESSING);
     avatar.setActiveVideo('standby');
-    showAppBubble('Memproses...');
+    showAppBubble('');
     const text = await transcribe(wav);
     if (!sessionActive || myFlow !== flowToken) return;
     if (text && text.trim()) {
       showUserBubble(text);
-      showAppBubble('Berpikir...');
-      const reply = await askAI(text);
+      showAppBubble('');
+      const ai = await askAI(text);
       if (!sessionActive || myFlow !== flowToken) return;
-      const toSpeak = reply || text; // fallback echo if AI unavailable
+      if (!ai || !ai.ok || !ai.text) {
+        // ERROR: jangan kirim ke TTS (jangan ucapkan error/echo). Tampilkan status singkat lalu lanjut dengarkan.
+        const errMsg = (ai && ai.error) ? String(ai.error) : 'AI tidak tersedia.';
+        console.warn('[AI] no reply, TTS skipped:', errMsg);
+        UI.setSpokenText('');
+        showAppBubble('Maaf, layanan AI belum siap. Silakan coba lagi.');
+        setState(STATE.IDLE);
+        if (sessionActive && myFlow === flowToken) setTimeout(() => { if (sessionActive && myFlow === flowToken) startRecordingFlow(); }, 1200);
+        return;
+      }
       showAppBubble(''); // hide hasil jawaban
-      speakEcho(toSpeak, { hideText: true }); // onEnd continues to next question while sessionActive
+      speakEcho(ai.text, { hideText: true }); // onEnd continues to next question while sessionActive
     } else {
       // no speech detected -> keep waiting for next question
       showAppBubble('Saya belum mendengar pertanyaan. Silakan coba lagi.');

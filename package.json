@@ -6,7 +6,9 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "build:win": "electron-builder --win nsis",
+    "build:dir": "electron-builder --dir"
   },
   "dependencies": {
     "onnxruntime-node": "^1.31.1",
@@ -18,18 +20,60 @@
   },
   "build": {
     "appId": "com.pupr.resepsionis",
+    "productName": "Resepsionis Virtual PUPR",
+    "asar": true,
+    "directories": {
+      "output": "dist-electron"
+    },
     "files": [
       "index.html",
       "main.js",
       "preload.js",
       "src/**/*",
-      "public/**/*"
+      "public/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".",
+        "to": "app-files",
+        "filter": [
+          "index.html",
+          "preload.js",
+          "app.config.json",
+          "server_stt.py",
+          "requirements.txt",
+          "src/**/*",
+          "public/**/*",
+          "scripts/**/*",
+          "!**/node_modules/**",
+          "!**/.git/**",
+          "!**/dist-electron/**",
+          "!**/.tts-cache/**",
+          "!**/*.wav",
+          "!**/*.mp3",
+          "!**/.env",
+          "!**/speakers.pth",
+          "!**/*.db",
+          "!**/__pycache__/**"
+        ]
+      }
     ],
     "mac": {
       "target": "dmg"
     },
     "win": {
-      "target": "nsis"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     },
     "linux": {
       "target": "AppImage"
