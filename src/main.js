@@ -659,9 +659,17 @@ async function recordUntilSilence(silenceMs) {
 async function transcribe(wavBlob) {
   const fd = new FormData();
   fd.append('audio', wavBlob, 'audio.wav');
-  const res = await fetch(STT_URL, { method: 'POST', body: fd });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'STT gagal');
+  let res;
+  try {
+    res = await fetch(STT_URL, { method: 'POST', body: fd });
+  } catch {
+    throw new Error('Backend pengenalan suara tidak merespons. Pastikan backend berjalan di ' + BACKEND_BASE_URL + '.');
+  }
+  // The backend may answer with HTML (proxy/500 page); never let that hide the real problem.
+  const raw = await res.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch { data = {}; }
+  if (!res.ok) throw new Error((data && data.error) ? String(data.error) : `Layanan pengenalan suara gagal (HTTP ${res.status}).`);
   return (data && data.text) ? data.text : '';
 }
 
@@ -737,7 +745,7 @@ async function startRecordingFlow() {
     UI.setMic(false);
     if (e && (e.code === 'CANCELLED' || e.message === 'CANCELLED')) return;
     if (!sessionActive || myFlow !== flowToken) return;
-    showAppBubble('Gagal merekam: ' + (e && e.message ? e.message : e));
+    showAppBubble('Gagal memproses suara: ' + (e && e.message ? e.message : e));
     setState(STATE.IDLE);
     // recover: keep session active and listen again
     setTimeout(() => { if (sessionActive && myFlow === flowToken) startRecordingFlow(); }, 1200);

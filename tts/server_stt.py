@@ -154,7 +154,7 @@ def _mask_for_log(value):
     v = (value or '').strip()
     if not v:
         return ''
-    return '*' * len(v) if len(v) <= 8 else (v[:4] + '…' + v[-4:])
+    return '*' * len(v) if len(v) <= 8 else (v[:4] + '...' + v[-4:])
 
 
 def load_dashboard_pupr_keys(payload=None):
@@ -702,12 +702,14 @@ def stt():
     if 'audio' not in request.files:
         return jsonify({'error': 'no audio'}), 400
     f = request.files['audio']
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-    f.save(tmp.name)
-    tmp.close()
+    tmp_path = None
     try:
+        # Close the temp handle before Werkzeug writes to the same path (Windows file locking).
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+            tmp_path = tmp.name
+        f.save(tmp_path)
         r = sr.Recognizer()
-        with sr.AudioFile(tmp.name) as source:
+        with sr.AudioFile(tmp_path) as source:
             audio = r.record(source)
         print('sample_rate:', audio.sample_rate, 'sample_width:', audio.sample_width, 'frames:', len(audio.frame_data), flush=True)
         if not audio.frame_data or len(audio.frame_data) < audio.sample_rate * audio.sample_width // 2:
@@ -716,15 +718,18 @@ def stt():
         print('result:', repr(text), flush=True)
         return jsonify({'text': text})
     except sr.UnknownValueError:
+        print('[stt] speech not recognized in this recording', flush=True)
         return jsonify({'text': ''})
     except Exception as e:
         import traceback; traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        print('[stt] failed:', repr(e), flush=True)
+        return jsonify({'error': f'Pengenalan suara gagal: {e}'}), 502
     finally:
-        try:
-            os.remove(tmp.name)
-        except Exception:
-            pass
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 from flask import send_file, Response
 
@@ -1151,4 +1156,11 @@ if __name__ == '__main__':
         port = int(os.environ.get('BACKEND_PORT') or (APP_CONFIG.get('backend') or {}).get('port') or 8767)
     except Exception:
         port = 8767
-    app.run(host=host, port=port, debug=False)
+    try:
+        from waitress import serve
+    except ImportError:
+        print('[server] Waitress is not installed; using Flask server. Install tts/requirements.txt for production WSGI.', flush=True)
+        app.run(host=host, port=port, debug=False)
+    else:
+        print(f'[server] Starting production WSGI server at http://{host}:{port}', flush=True)
+        serve(app, host=host, port=port)

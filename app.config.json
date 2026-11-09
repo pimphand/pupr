@@ -29,7 +29,7 @@
     "host": "127.0.0.1",
     "port": 8767,
     "baseUrl": "http://127.0.0.1:8767",
-    "pythonScript": "server_stt.py",
+    "pythonScript": "tts/server_stt.py",
     "autoStart": true
   },
   "features": {

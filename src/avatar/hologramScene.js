@@ -16,6 +16,7 @@ export class HologramScene {
       imageWidth: 3.55,
       fitScale: 0.72,
       positionStorageKey: 'pupr-avatar-character-position-v4',
+      backgroundOffsetStorageKey: 'pupr-avatar-background-offset-v1',
       characterPositionY: -0.34,
       ...options,
       videos: { standby: './public/karakter_baru/stanby.mp4', speaking: './public/video.mp4', ...(options.videos || {}) }
@@ -54,10 +55,14 @@ export class HologramScene {
     this.backgroundMesh = null;
     this.backgroundTexture = null;
     this.backgroundAspect = 941 / 1672;
+    this.backgroundBaseY = 0;
+    this.backgroundPlaneHeight = 2.45;
+    this.backgroundOffsetY = 0;
     this.createBackground();
 
     this.character = this.createIllustration();
     this.scene.add(this.character);
+    this.enableBackgroundDragging();
 
     this.resize();
     this.ro = new ResizeObserver(() => this.resize());
@@ -109,8 +114,94 @@ export class HologramScene {
       planeH = viewHeight;
       planeW = viewHeight * texAspect;
     }
-    this.backgroundMesh.position.y = -viewHeight * 0.06;
+    this.backgroundPlaneHeight = planeH;
+    this.backgroundBaseY = -viewHeight * 0.06;
     this.backgroundMesh.scale.set(planeW, planeH, 1);
+    this.applyBackgroundOffset();
+  }
+
+  applyBackgroundOffset() {
+    if (!this.backgroundMesh) return;
+    const viewHeight = 2.45;
+    const planeH = Number(this.backgroundPlaneHeight) || viewHeight;
+    const halfView = viewHeight / 2;
+    const halfPlane = planeH / 2;
+    // Batas agar tepi gambar tidak meninggalkan celah di kanvas.
+    const minOffset = halfView - this.backgroundBaseY - halfPlane;
+    const maxOffset = halfPlane - halfView - this.backgroundBaseY;
+    if (minOffset > maxOffset) {
+      this.backgroundOffsetY = 0;
+    } else {
+      this.backgroundOffsetY = THREE.MathUtils.clamp(Number(this.backgroundOffsetY) || 0, minOffset, maxOffset);
+    }
+    this.backgroundMesh.position.y = this.backgroundBaseY + this.backgroundOffsetY;
+  }
+
+  enableBackgroundDragging() {
+    const storageKey = this.options.backgroundOffsetStorageKey;
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let dragging = false;
+    let startClientY = 0;
+    let startOffset = 0;
+
+    const updateRay = (event) => {
+      const rect = this.canvas.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, this.camera);
+    };
+    const isOverCharacter = (event) => {
+      if (!this.characterMesh) return false;
+      updateRay(event);
+      return raycaster.intersectObject(this.characterMesh, false).length > 0;
+    };
+
+    try {
+      const saved = Number(localStorage.getItem(storageKey));
+      if (Number.isFinite(saved)) this.backgroundOffsetY = saved;
+    } catch {
+      // Offset default (0) dipakai jika penyimpanan browser tidak tersedia.
+    }
+    this.applyBackgroundOffset();
+
+    this.onBackgroundPointerDown = (event) => {
+      if (event.button !== undefined && event.button !== 0) return;
+      if (isOverCharacter(event)) return;
+      dragging = true;
+      startClientY = event.clientY;
+      startOffset = this.backgroundOffsetY;
+      this.canvas.classList.add('dragging-background');
+      this.canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    };
+    this.onBackgroundPointerMove = (event) => {
+      if (!dragging) {
+        this.canvas.classList.toggle('background-draggable', !isOverCharacter(event));
+        return;
+      }
+      const rect = this.canvas.getBoundingClientRect();
+      if (!rect.height) return;
+      const worldPerPixel = (this.camera.top - this.camera.bottom) / rect.height;
+      this.backgroundOffsetY = startOffset - (event.clientY - startClientY) * worldPerPixel;
+      this.applyBackgroundOffset();
+    };
+    this.onBackgroundPointerUp = (event) => {
+      if (!dragging) return;
+      dragging = false;
+      this.canvas.classList.remove('dragging-background');
+      if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+      try {
+        localStorage.setItem(storageKey, String(this.backgroundOffsetY));
+      } catch {
+        // Penggeseran tetap aktif walau penyimpanan browser tidak tersedia.
+      }
+    };
+
+    this.canvas.addEventListener('pointerdown', this.onBackgroundPointerDown);
+    this.canvas.addEventListener('pointermove', this.onBackgroundPointerMove);
+    this.canvas.addEventListener('pointerup', this.onBackgroundPointerUp);
+    this.canvas.addEventListener('pointercancel', this.onBackgroundPointerUp);
   }
 
   createIllustration() {
@@ -127,7 +218,9 @@ export class HologramScene {
       video.muted = true;
       video.playsInline = true;
       video.setAttribute('playsinline', '');
-      video.crossOrigin = 'anonymous';
+      video.preload = 'auto';
+      // crossOrigin is not set for same-origin local assets; setting it forces a CORS
+      // fetch and breaks playback when the local static server doesn't send CORS headers.
       return video;
     };
 
@@ -250,6 +343,9 @@ export class HologramScene {
           this.characterOverlay.scale.y = this.characterAspect;
           this.resize();
         }
+      });
+      v.addEventListener('error', () => {
+        console.warn('[avatar] video failed to load:', v.src, v.error?.message || v.error);
       });
     }
 
@@ -543,6 +639,10 @@ export class HologramScene {
     this.canvas.removeEventListener('pointermove', this.onCharacterPointerMove);
     this.canvas.removeEventListener('pointerup', this.onCharacterPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onCharacterPointerUp);
+    this.canvas.removeEventListener('pointerdown', this.onBackgroundPointerDown);
+    this.canvas.removeEventListener('pointermove', this.onBackgroundPointerMove);
+    this.canvas.removeEventListener('pointerup', this.onBackgroundPointerUp);
+    this.canvas.removeEventListener('pointercancel', this.onBackgroundPointerUp);
     if (this.characterMesh) this.characterMesh.geometry.dispose();
     if (this.characterOverlay) this.characterOverlay.geometry.dispose();
     if (this.character) this.character.traverse((object) => {

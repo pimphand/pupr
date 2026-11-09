@@ -51,6 +51,8 @@ body::before{
 #avatarCanvas{width:100%;height:100%;display:block}
 #avatarCanvas.character-draggable{cursor:grab;touch-action:none}
 #avatarCanvas.dragging-character{cursor:grabbing;touch-action:none}
+#avatarCanvas.background-draggable{cursor:grab;touch-action:none}
+#avatarCanvas.dragging-background{cursor:grabbing;touch-action:none}
 .scanline{position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,229,255,0.06) 0px,rgba(0,229,255,0.06) 1px,transparent 1px,transparent 4px);mix-blend-mode:screen;opacity:0.4;animation:scan 6s linear infinite}
 @keyframes scan{0%{background-position:0 0}100%{background-position:0 100%}}
 .holo-ring{position:absolute;left:50%;bottom:8%;transform:translateX(-50%);width:60%;height:6px;border-radius:50%;box-shadow:0 0 24px 4px var(--cyan);background:radial-gradient(ellipse,rgba(0,229,255,0.6),transparent 70%);opacity:0.8}

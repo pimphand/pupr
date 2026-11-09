@@ -3,13 +3,18 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const script = path.join(root, 'server_stt.py');
-const outDir = root; // place exe next to main.js so extraResources can pick it up
+const scriptCandidates = [
+  path.join(root, 'tts', 'server_stt.py'),
+  path.join(root, 'server_stt.py'),
+];
+const script = scriptCandidates.find((p) => fs.existsSync(p));
+const outDir = path.join(root, 'tts'); // place exe in tts/ (bundled via extraResources)
 
-if (!fs.existsSync(script)) {
-  console.error('[build-backend] server_stt.py not found');
+if (!script) {
+  console.error('[build-backend] server_stt.py not found (looked in tts/ and project root)');
   process.exit(1);
 }
+try { fs.mkdirSync(outDir, { recursive: true }); } catch (_) {}
 
 // Prefer pyinstaller on PATH; fall back to python -m PyInstaller.
 let cmd = 'pyinstaller';

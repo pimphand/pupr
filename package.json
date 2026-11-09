@@ -42,14 +42,13 @@
           "index.html",
           "preload.js",
           "app.config.json",
-          "server_stt.py",
+          "tts/**/*",
           "server_stt.exe",
-          "requirements.txt",
           "src/**/*",
           "public/**/*",
-           "scripts/**/*",
-           "python/**/*",
-           "python-runtime/**/*",
+          "scripts/**/*",
+          "python/**/*",
+          "python-runtime/**/*",
           "!**/node_modules/**",
           "!**/.git/**",
           "!**/dist-electron/**",
@@ -73,6 +72,7 @@
           "arch": ["x64"]
         }
       ],
+      "signAndEditExecutable": false,
       "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {

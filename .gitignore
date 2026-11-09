@@ -5,6 +5,31 @@ server/node_modules/
 # Build output
 dist/
 server/dist/
+dist-electron/
+release/
+out/
+/build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+*.egg-info/
+
+# Backend hasil PyInstaller (dibuat lewat npm run build:backend)
+tts/server_stt.exe
+tts/server_stt
+
+# Cache & database lokal
+.tts-cache/
+*.db
+*.sqlite3
+
+# Metadata tooling lokal
+.freebuff/
 
 # Logs
 *.log

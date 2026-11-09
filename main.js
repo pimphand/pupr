@@ -7,7 +7,7 @@ const { spawn } = require('child_process');
 const DEFAULT_CONFIG = {
   app: { name: 'Resepsionis Virtual PUPR', language: 'id-ID' },
   electron: { window: { width: 1280, height: 800 }, permissions: { media: true, audioCapture: true, microphone: true } },
-  backend: { enabled: true, host: '127.0.0.1', port: 8767, pythonScript: 'server_stt.py', autoStart: true }
+  backend: { enabled: true, host: '127.0.0.1', port: 8767, pythonScript: 'tts/server_stt.py', autoStart: true }
 };
 
 function deepMerge(base, override) {
@@ -128,13 +128,20 @@ function resolveBackendLaunch(backend) {
   const isWin = process.platform === 'win32';
   // Prefer a bundled backend executable when packaged (no local Python dependency).
   const exeNames = isWin ? ['server_stt.exe', 'pupr-backend.exe', 'backend.exe'] : ['server_stt', 'pupr-backend', 'backend'];
+  const exeDirs = [path.join(root, 'tts'), root, path.join(process.resourcesPath || '', 'backend'), process.resourcesPath || ''];
   for (const name of exeNames) {
-    for (const dir of [root, path.join(process.resourcesPath || '', 'backend'), process.resourcesPath || '']) {
+    for (const dir of exeDirs) {
       const p = dir ? path.join(dir, name) : '';
       if (p && fs.existsSync(p)) return { command: p, args: [], cwd: path.dirname(p), bundled: true };
     }
   }
-  const script = path.join(root, backend.pythonScript || 'server_stt.py');
+  const scriptName = backend.pythonScript || 'server_stt.py';
+  const scriptCandidates = [
+    path.isAbsolute(scriptName) ? scriptName : '',
+    path.join(root, 'tts', path.basename(scriptName)),
+    path.join(root, scriptName),
+  ].filter(Boolean);
+  const script = scriptCandidates.find((p) => fs.existsSync(p)) || path.join(root, 'tts', path.basename(scriptName));
   // Prefer a bundled portable Python runtime (shipped with the app) so clients
   // do not need to install Python themselves.
   const runtimeNames = ['python', 'python-runtime', 'python3'];
@@ -233,12 +240,47 @@ function stopBackend() {
 app.commandLine.appendSwitch('enable-speech-dispatcher');
 app.commandLine.appendSwitch('enable-features', 'WebSpeech');
 
-app.whenReady().then(() => {
+// Avoid spawning duplicate backends: a stale instance on the same port would keep answering
+// requests with outdated/broken code (which silently breaks /stt and /ai).
+function probeBackend(host, port, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    const req = http.get({ host, port, path: '/api-status', timeout: timeoutMs }, (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return resolve(false);
+        try {
+          const data = JSON.parse(body);
+          resolve(!!(data && data.ok));
+        } catch (_) {
+          resolve(false);
+        }
+      });
+    });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+  });
+}
+
+async function waitForBackend(host, port, maxWaitMs = 15000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < maxWaitMs) {
+    if (await probeBackend(host, port, 800)) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+app.whenReady().then(async () => {
   APP_ROOT = getAppRoot();
   appConfig = loadAppConfig();
 
   const backend = appConfig.backend || {};
-  if (backend.enabled !== false && backend.autoStart !== false) {
+  const backendHost = backend.host || '127.0.0.1';
+  const backendPort = Number(backend.port) || 8767;
+  if (backend.enabled !== false && backend.autoStart !== false && await probeBackend(backendHost, backendPort)) {
+    console.log(`[py] backend already running, reusing http://${backendHost}:${backendPort}`);
+  } else if (backend.enabled !== false && backend.autoStart !== false) {
     try {
       const launch = resolveBackendLaunch(backend);
       if (launch.unavailable) {
@@ -271,6 +313,10 @@ app.whenReady().then(() => {
         pythonProcess.stderr.on('data', (d) => console.log('[py]', String(d).trim()));
         pythonProcess.on('error', (e) => console.warn('[py] spawn error:', e.message));
         pythonProcess.on('exit', (code, sig) => console.log('[py] exit', code, sig));
+        const ready = await waitForBackend(backendHost, backendPort);
+        console.log(ready
+          ? `[py] backend ready at http://${backendHost}:${backendPort}`
+          : `[py] backend not responding at http://${backendHost}:${backendPort} yet; check the Python log above.`);
       }
     } catch (e) {
       console.warn('Failed to start backend:', e.message);
