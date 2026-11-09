@@ -61,11 +61,60 @@ function loadAppConfig() {
 let appConfig = DEFAULT_CONFIG;
 let APP_ROOT = __dirname;
 
+const { spawnSync } = require('child_process');
+
+function isRealPython(cmd, extraArgs) {
+  try {
+    const args = (extraArgs || []).concat(['--version']);
+    const r = spawnSync(cmd, args, { windowsHide: true, timeout: 5000, encoding: 'utf8', shell: false });
+    if (r.error) return false;
+    // Microsoft Store alias stub exits 9009 and prints install hint; real python exits 0.
+    if (r.status !== 0 && r.status !== null) {
+      // Some builds print version to stderr but still exit 0; guard against 9009 alias.
+      if (r.status === 9009) return false;
+    }
+    const out = String((r.stdout || '') + (r.stderr || ''));
+    return /Python\s+\d/i.test(out);
+  } catch (_) {
+    return false;
+  }
+}
+
 function getPythonCommand() {
   if (process.env.PYTHON_EXECUTABLE) return process.env.PYTHON_EXECUTABLE;
   if (process.platform === 'win32') {
-    // Common Windows launchers; packaged app may bundle a backend exe instead (handled separately).
-    return process.env.PYTHON || 'python';
+    // Prefer the Windows Python Launcher (py), which is not affected by the
+    // Microsoft Store "python" app-execution alias stub that exits 9009.
+    const candidates = [];
+    if (process.env.PYTHON) candidates.push(process.env.PYTHON);
+    candidates.push('py', 'python3', 'python');
+    // Discover any python on PATH via `where` (filters out the Store alias stub).
+    try {
+      for (const name of ['py', 'python', 'python3']) {
+        const w = spawnSync('where', [name], { windowsHide: true, timeout: 5000, encoding: 'utf8', shell: false });
+        if (w.status === 0 && w.stdout) {
+          for (const line of String(w.stdout).split(/\r?\n/)) {
+            const pth = line.trim();
+            if (pth) candidates.push(pth);
+          }
+        }
+      }
+    } catch (_) {}
+    for (const ver of ['313', '312', '311', '310', '39']) {
+      candidates.push(`C:\\Python${ver}\\python.exe`);
+      candidates.push(`C:\\Program Files\\Python${ver}\\python.exe`);
+      const local = process.env.LOCALAPPDATA;
+      if (local) candidates.push(path.join(local, 'Programs', 'Python', `Python${ver}`, 'python.exe'));
+      const pf = process.env.ProgramFiles;
+      if (pf) candidates.push(path.join(pf, `Python${ver}`, 'python.exe'));
+    }
+    for (const c of candidates) {
+      if (!c || /\s/.test(c) && !fs.existsSync(c)) continue;
+      // Absolute paths must exist.
+      if (c.includes('\\') && !fs.existsSync(c)) continue;
+      if (isRealPython(c, [])) return c;
+    }
+    return null;
   }
   // Dev fallbacks (macOS). Avoid hard-coding these as requirements for packaged builds.
   for (const p of ['/opt/homebrew/bin/python3.11', '/usr/local/bin/python3.11', '/usr/bin/python3', 'python3']) {
@@ -86,7 +135,25 @@ function resolveBackendLaunch(backend) {
     }
   }
   const script = path.join(root, backend.pythonScript || 'server_stt.py');
-  return { command: getPythonCommand(), args: [script], cwd: root, bundled: false, script };
+  // Prefer a bundled portable Python runtime (shipped with the app) so clients
+  // do not need to install Python themselves.
+  const runtimeNames = ['python', 'python-runtime', 'python3'];
+  const baseDirs = [root, process.resourcesPath || ''];
+  for (const base of baseDirs) {
+    for (const name of runtimeNames) {
+      const rtDir = path.join(base, name);
+      const candidate = path.join(rtDir, 'python.exe');
+      if (fs.existsSync(candidate) && isRealPython(candidate, [])) {
+        return { command: candidate, args: [script], cwd: rtDir, bundled: false, script, runtime: true };
+      }
+    }
+  }
+  // Also try nested runtime dir: <root>/python/python.exe already covered.
+  const python = getPythonCommand();
+  if (!python) {
+    return { command: null, args: [], cwd: root, bundled: false, script, unavailable: true };
+  }
+  return { command: python, args: [script], cwd: root, bundled: false, script };
 }
 
 const MIME = {
@@ -174,7 +241,9 @@ app.whenReady().then(() => {
   if (backend.enabled !== false && backend.autoStart !== false) {
     try {
       const launch = resolveBackendLaunch(backend);
-      if (launch.script && !fs.existsSync(launch.script) && !launch.bundled) {
+      if (launch.unavailable) {
+        console.warn('[py] no usable Python found on this system; backend disabled. Install Python from python.org (not the Microsoft Store alias) or bundle server_stt.exe.');
+      } else if (launch.script && !fs.existsSync(launch.script) && !launch.bundled) {
         console.warn('[py] backend script not found (packaged build without bundled backend?):', launch.script);
       } else {
         const env = { ...process.env };

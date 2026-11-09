@@ -7,7 +7,8 @@
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
-    "build:win": "electron-builder --win nsis",
+    "build:backend": "node scripts/build-backend.js",
+    "build:win": "npm run build:backend && electron-builder --win nsis",
     "build:dir": "electron-builder --dir"
   },
   "dependencies": {
@@ -42,10 +43,13 @@
           "preload.js",
           "app.config.json",
           "server_stt.py",
+          "server_stt.exe",
           "requirements.txt",
           "src/**/*",
           "public/**/*",
-          "scripts/**/*",
+           "scripts/**/*",
+           "python/**/*",
+           "python-runtime/**/*",
           "!**/node_modules/**",
           "!**/.git/**",
           "!**/dist-electron/**",

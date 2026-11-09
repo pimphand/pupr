@@ -15,6 +15,8 @@ Build ini **tidak bergantung pada file lokal dev** (path Homebrew/macOS, dashboa
 ```bash
 cd pupr
 npm install
+# build:win otomatis menjalankan build:backend (PyInstaller) jika tersedia,
+# sehingga server_stt.exe ter-bundle dan client tidak perlu install Python.
 npm run build:win
 ```
 Output: `dist-electron/`.
