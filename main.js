@@ -50,12 +50,52 @@ function readJsonSafe(filePath) {
   return null;
 }
 
+// Minimal .env loader (KEY=VALUE). Nilai dari environment nyata selalu menang atas isi file.
+function loadEnvFile(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return;
+    for (const raw of fs.readFileSync(filePath, 'utf8').split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const eq = line.indexOf('=');
+      if (eq < 1) continue;
+      const key = line.slice(0, eq).trim();
+      let val = line.slice(eq + 1).trim();
+      if (val.length > 1 && ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'")))) {
+        val = val.slice(1, -1);
+      }
+      if (!process.env[key]) process.env[key] = val;
+    }
+  } catch (e) {
+    console.warn('[env] failed to load', filePath, e && e.message);
+  }
+}
+
+// Override dari .env: TTS_URL menunjuk backend STT/TTS/AI (mis. container Docker).
+function applyEnvOverrides(config) {
+  const cfg = { ...(config || {}), backend: { ...((config || {}).backend || {}) } };
+  const ttsUrl = String(process.env.TTS_URL || process.env.PUPR_TTS_URL || '').trim().replace(/\/+$/, '');
+  if (ttsUrl) {
+    cfg.backend.baseUrl = ttsUrl;
+    try {
+      const u = new URL(ttsUrl);
+      if (u.hostname) cfg.backend.host = u.hostname;
+      if (u.port) cfg.backend.port = Number(u.port);
+    } catch (_) {
+      console.warn('[config] TTS_URL tidak valid, memakai app.config.json:', ttsUrl);
+    }
+  }
+  const autoStart = String(process.env.PUPR_BACKEND_AUTOSTART || '').trim().toLowerCase();
+  if (autoStart === 'false' || autoStart === '0' || autoStart === 'off') cfg.backend.autoStart = false;
+  return cfg;
+}
+
 function loadAppConfig() {
   const appRoot = getAppRoot();
   // Priority: userData override > bundled/app config > defaults. User override lets packaged EXE be configured without editing bundled files.
   const fromApp = readJsonSafe(path.join(appRoot, 'app.config.json')) || readJsonSafe(path.join(__dirname, 'app.config.json'));
   const fromUser = readJsonSafe(getUserConfigPath());
-  return deepMerge(deepMerge(DEFAULT_CONFIG, fromApp || {}), fromUser || {});
+  return applyEnvOverrides(deepMerge(deepMerge(DEFAULT_CONFIG, fromApp || {}), fromUser || {}));
 }
 
 let appConfig = DEFAULT_CONFIG;
@@ -171,11 +211,19 @@ const MIME = {
   '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav'
 };
 
-function createStaticServer(root) {
+function createStaticServer(root, configOverride) {
   return http.createServer((req, res) => {
     let urlPath = '/';
     try { urlPath = decodeURIComponent((req.url || '/').split('?')[0]); } catch (_) {}
     if (urlPath === '/') urlPath = '/index.html';
+    // Renderer membaca ./app.config.json: sajikan konfigurasi efektif (file + userData + .env),
+    // supaya override TTS_URL dari .env ikut terpakai untuk /tts, /stt, dan /ai.
+    if (urlPath === '/app.config.json' && configOverride) {
+      res.setHeader('Content-Type', MIME['.json']);
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify(configOverride));
+      return;
+    }
     const filePath = path.normalize(path.join(root, urlPath));
     const rootNorm = path.normalize(root + path.sep);
     if (!filePath.startsWith(rootNorm) && filePath !== path.normalize(root)) { res.statusCode = 403; res.end('Forbidden'); return; }
@@ -214,7 +262,7 @@ function createWindow() {
   win.webContents.session.setPermissionCheckHandler(() => true);
   if (appConfig.electron?.userAgent) win.webContents.setUserAgent(appConfig.electron.userAgent);
 
-  const server = createStaticServer(APP_ROOT);
+  const server = createStaticServer(APP_ROOT, appConfig);
   server.listen(0, '127.0.0.1', () => {
     const port = server.address().port;
     win.loadURL(`http://127.0.0.1:${port}/`);
@@ -273,6 +321,9 @@ async function waitForBackend(host, port, maxWaitMs = 15000) {
 
 app.whenReady().then(async () => {
   APP_ROOT = getAppRoot();
+  // .env lokal (userData + app root) agar TTS_URL/PUPR_BACKEND_AUTOSTART bisa diatur tanpa ubah kode.
+  loadEnvFile(path.join(app.getPath('userData'), '.env'));
+  loadEnvFile(path.join(APP_ROOT, '.env'));
   appConfig = loadAppConfig();
 
   const backend = appConfig.backend || {};

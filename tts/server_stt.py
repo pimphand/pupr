@@ -833,6 +833,12 @@ def mask_secret(value):
     return value[:4] + '…' + value[-4:]
 
 
+# Container/proxy deployment (mis. Docker) tidak datang dari 127.0.0.1 walau port-nya hanya
+# di-publish ke loopback host. Aktifkan PUPR_ALLOW_REMOTE_API=1 untuk tetap mengizinkan
+# /api-status & /api-config di topologi tersebut.
+ALLOW_REMOTE_LOCAL_API = (os.environ.get('PUPR_ALLOW_REMOTE_API') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 def _is_loopback_request():
     try:
         ip = (request.remote_addr or '').strip()
@@ -845,7 +851,7 @@ def _is_loopback_request():
 @app.before_request
 def _guard_local_api_routes():
     # Defense-in-depth: backend binds loopback, but block non-loopback callers if misconfigured/proxied.
-    if request.path in ('/api-status', '/api-config') and not _is_loopback_request():
+    if request.path in ('/api-status', '/api-config') and not ALLOW_REMOTE_LOCAL_API and not _is_loopback_request():
         return jsonify({'error': 'Forbidden'}), 403
 
 

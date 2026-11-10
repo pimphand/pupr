@@ -1,0 +1,25 @@
+# Secret & konfigurasi lokal (dikirim lewat env_file / volume, bukan ke image)
+.env
+.env.*
+
+# Cache & artefak runtime
+.tts-cache/
+__pycache__/
+*.py[cod]
+*.mp3
+*.wav
+
+# Model / aset besar yang tidak dipakai server_stt.py (provider TTS = gateway)
+speakers.pth
+*.pth
+*.onnx
+
+# Hasil PyInstaller & dokumen
+server_stt
+server_stt.exe
+tts.txt
+README.md
+Dockerfile
+docker-compose.yml
+.git
+.DS_Store

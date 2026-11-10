@@ -37,6 +37,10 @@ const fullArgs = args.concat([
   '--noconfirm',
   '--onefile',
   '--name', 'server_stt',
+  // speech_recognition menyimpan konverter FLAC (flac-win32.exe/flac-mac/flac-linux-*) sebagai
+  // package data di dalam foldernya sendiri; tanpa flag ini /stt gagal di exe ("FLAC conversion
+  // utility not available") karena library mencarinya relatif terhadap __file__ (folder _MEIPASS).
+  '--collect-data', 'speech_recognition',
   '--distpath', outDir,
   '--workpath', path.join(root, 'build', 'pyinstaller'),
   '--specpath', path.join(root, 'build', 'pyinstaller'),

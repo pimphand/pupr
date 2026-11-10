@@ -1,0 +1,41 @@
+# Backend STT/TTS/AI PUPR (tts/server_stt.py) di Docker.
+#   docker compose up -d --build
+#   curl http://127.0.0.1:8767/api-status
+#
+# Port 8767 di-bind ke loopback host supaya cocok dengan backend.baseUrl di app.config.json
+# (Electron membaca TTS_URL dari pupr/.env). Ganti TTS_BIND=0.0.0.0 hanya bila memang perlu
+# diakses dari mesin lain (endpoint /tts & /ai tidak punya autentikasi).
+name: pupr-tts
+
+services:
+  tts:
+    build:
+      context: .
+    image: pupr-tts:latest
+    restart: unless-stopped
+    env_file:
+      # Opsional: salin .env.example -> .env untuk override (mis. TTS_API_KEY, DASHBOARD_CONFIG_URL).
+      - path: .env
+        required: false
+    environment:
+      BACKEND_HOST: "0.0.0.0"
+      BACKEND_PORT: "8767"
+      PUPR_USER_DATA: "/data"
+      TTS_CACHE_DIR: "/data/.tts-cache"
+      # /api-status & /api-config hanya untuk loopback by default; aktifkan agar app di host
+      # (bukan 127.0.0.1 di dalam container) tetap bisa membaca konfigurasi runtime.
+      PUPR_ALLOW_REMOTE_API: "${PUPR_ALLOW_REMOTE_API:-1}"
+    ports:
+      - "${TTS_BIND:-127.0.0.1}:${TTS_PORT:-8767}:8767"
+    extra_hosts:
+      # Linux: buat `host.docker.internal` menunjuk ke host (Docker Desktop sudah otomatis).
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - tts_data:/data
+      # Opsional: pakai app.config.json repo sebagai default config backend.
+      # - ../app.config.json:/app/app.config.json:ro
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  tts_data:
