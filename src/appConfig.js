@@ -12,7 +12,7 @@ const DEFAULT_CONFIG = {
     enabled: true,
     host: '127.0.0.1',
     port: 8767,
-    baseUrl: 'http://127.0.0.1:8767'
+    baseUrl: 'https://p.dwiki.id'
   },
   features: {
     sttEnabled: true,

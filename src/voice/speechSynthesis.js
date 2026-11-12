@@ -1,5 +1,5 @@
 let ttsConfig = {
-  backendBaseUrl: 'http://127.0.0.1:8767',
+  backendBaseUrl: 'https://p.dwiki.id',
   defaultSpeaker: 'brian',
   rate: 1,
   pitch: 1,
