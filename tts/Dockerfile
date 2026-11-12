@@ -27,6 +27,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server_stt.py ./
+COPY web ./web
 
 RUN useradd --create-home --uid 10001 pupr \
  && mkdir -p /data/.tts-cache \

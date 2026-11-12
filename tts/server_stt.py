@@ -1156,6 +1156,11 @@ def ai():
             'detail': str(e)
         }), 503
 
+@app.route('/', methods=['GET'])
+def test_page():
+    return send_file(APP_ROOT / 'web' / 'index.html', mimetype='text/html')
+
+
 if __name__ == '__main__':
     host = os.environ.get('BACKEND_HOST') or (APP_CONFIG.get('backend') or {}).get('host') or '127.0.0.1'
     try:
