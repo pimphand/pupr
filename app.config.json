@@ -30,7 +30,7 @@
     "port": 8767,
     "baseUrl": "https://p.dwiki.id",
     "pythonScript": "tts/server_stt.py",
-    "autoStart": true
+    "autoStart": false
   },
   "features": {
     "sttEnabled": true,
