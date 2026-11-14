@@ -67,7 +67,7 @@ BASE_DIR_PATH = APP_ROOT  # compat name used later
 load_env_file(str(DATA_DIR / '.env'), override=False)
 load_env_file(str(APP_ROOT / '.env'), override=False)
 
-# Load PUPR API keys from Dashboard DB (preferred source). Dashboard stores them in public.app_settings.
+# Load AI config from the Dashboard DB (preferred source). Dashboard stores it in public.app_settings.
 _is_frozen = bool(getattr(sys, 'frozen', False))
 
 def _load_backend_cfg_hint():
@@ -89,25 +89,36 @@ _default_dash = '' if _is_frozen else 'http://localhost:4321/api/pupr/config'
 DASHBOARD_CONFIG_URL = (os.environ.get('DASHBOARD_CONFIG_URL') or (_backend_hint.get('dashboardConfigUrl') or '') or _default_dash).strip()
 DASHBOARD_USAGE_URL = (os.environ.get('DASHBOARD_USAGE_URL') or (_backend_hint.get('dashboardUsageUrl') or '') or '').strip()
 DASHBOARD_CONVERSATION_URL = (os.environ.get('DASHBOARD_CONVERSATION_URL') or (_backend_hint.get('dashboardConversationUrl') or '') or '').strip()
+DASHBOARD_CHAT_URL = (os.environ.get('DASHBOARD_CHAT_URL') or (_backend_hint.get('dashboardChatUrl') or '') or '').strip()
 DASHBOARD_CONFIG_TOKEN = (os.environ.get('DASHBOARD_CONFIG_TOKEN') or os.environ.get('PUPR_CONFIG_TOKEN') or (_backend_hint.get('dashboardConfigToken') or '') or '').strip()
 try:
     DASHBOARD_CONFIG_TIMEOUT = float(os.environ.get('DASHBOARD_CONFIG_TIMEOUT') or (_backend_hint.get('dashboardConfigTimeout') or 4.0))
 except Exception:
     DASHBOARD_CONFIG_TIMEOUT = 4.0
+try:
+    DASHBOARD_CHAT_TIMEOUT = float(os.environ.get('DASHBOARD_CHAT_TIMEOUT') or 60)
+except Exception:
+    DASHBOARD_CHAT_TIMEOUT = 60.0
+try:
+    DASHBOARD_CONFIG_REFRESH_SECONDS = float(os.environ.get('DASHBOARD_CONFIG_REFRESH_SECONDS') or 30)
+except Exception:
+    DASHBOARD_CONFIG_REFRESH_SECONDS = 30.0
+DASHBOARD_CONFIG_REFRESH_SECONDS = max(0.0, DASHBOARD_CONFIG_REFRESH_SECONDS)
+_dashboard_config_lock = threading.Lock()
+_dashboard_config_last_attempt = 0.0
+_dashboard_config_last_fetch = 0.0
+_dashboard_config_updated_at = ''
 
 def _derive_dashboard_urls():
-    global DASHBOARD_USAGE_URL, DASHBOARD_CONVERSATION_URL
+    global DASHBOARD_USAGE_URL, DASHBOARD_CONVERSATION_URL, DASHBOARD_CHAT_URL
     base = (DASHBOARD_CONFIG_URL or '').strip().rstrip('/')
     if not base:
-        DASHBOARD_USAGE_URL = ''; DASHBOARD_CONVERSATION_URL = ''; return
+        DASHBOARD_USAGE_URL = ''; DASHBOARD_CONVERSATION_URL = ''; DASHBOARD_CHAT_URL = ''; return
     if base.endswith('/api/pupr/config'):
         root = base[:-len('/api/pupr/config')]
         if not DASHBOARD_USAGE_URL: DASHBOARD_USAGE_URL = root + '/api/pupr/usage'
         if not DASHBOARD_CONVERSATION_URL: DASHBOARD_CONVERSATION_URL = root + '/api/pupr/conversation'
-    # Dev-only localhost convenience: if still missing and not frozen, fall back to localhost (never for remote/custom URLs)
-    if not _is_frozen:
-        if not DASHBOARD_USAGE_URL and 'localhost' in base or '127.0.0.1' in base or '[::1]' in base:
-            pass
+        if not DASHBOARD_CHAT_URL: DASHBOARD_CHAT_URL = root + '/api/pupr/chat'
 _derive_dashboard_urls()
 
 
@@ -141,76 +152,46 @@ def _dashboard_url_fallbacks(url):
     return res
 
 
-PUPR_API_KEY_FIELDS = {
-    'OPENAI_API_KEY',
-    'GEMINI_API_KEY',
-    'CLOUDFLARE_API_TOKEN',
-    'CLOUDFLARE_ACCOUNT_ID',
-    'CLOUDFLARE_AI_MODEL',
-}
-
-
-def _mask_for_log(value):
-    v = (value or '').strip()
-    if not v:
-        return ''
-    return '*' * len(v) if len(v) <= 8 else (v[:4] + '...' + v[-4:])
-
-
-def load_dashboard_pupr_keys(payload=None):
-    global CLOUDFLARE_AI_RUN_URL, CLOUDFLARE_AI_FORMAT
-    """Load PUPR API keys + AI config from dashboard API/DB (public.app_settings). Source of truth."""
+def load_dashboard_config(payload=None):
+    """Load AI config (systemPrompt + limits) from the dashboard API/DB. Single source of truth."""
+    global _dashboard_config_last_fetch, _dashboard_config_updated_at, _dashboard_config_last_attempt
     if payload is None:
-        payload = fetch_dashboard_pupr_config()
+        payload = fetch_dashboard_config()
     if not isinstance(payload, dict):
         return None
+    now = time.time()
+    _dashboard_config_last_attempt = now
+    _dashboard_config_last_fetch = now
+    _dashboard_config_updated_at = str(payload.get('aiUpdatedAt') or payload.get('updatedAt') or '')
     try:
-        keys = payload.get('keys')
         ai_cfg = payload.get('aiConfig')
-        if isinstance(keys, dict):
-            applied = []
-            for k in PUPR_API_KEY_FIELDS:
-                v = keys.get(k)
-                if not isinstance(v, str):
-                    continue
-                vv = v.strip()
-                if vv:
-                    os.environ[k] = vv  # DB/dashboard is the source of truth for PUPR API keys
-                    applied.append(k)
-                elif k == 'CLOUDFLARE_AI_MODEL':
-                    # keep a safe default if dashboard stores empty model
-                    os.environ.setdefault(k, '@cf/meta/llama-3.3-70b-instruct-fp8-fast')
-            if applied or payload.get('ok'):
-                os.environ['PUPR_KEYS_SOURCE'] = f"dashboard_db:{DASHBOARD_CONFIG_URL}"
-                if applied:
-                    cf = ('CLOUDFLARE_ACCOUNT_ID=' + _mask_for_log(os.environ.get('CLOUDFLARE_ACCOUNT_ID',''))) if 'CLOUDFLARE_ACCOUNT_ID' in applied else ''
-                    print('[config] Loaded PUPR keys from dashboard DB:', ', '.join(sorted(applied)), flush=True)
-                    if cf:
-                        print('[config] DB key check:', cf, 'CLOUDFLARE_API_TOKEN=' + _mask_for_log(os.environ.get('CLOUDFLARE_API_TOKEN','')), flush=True)
-                else:
-                    print('[config] Dashboard DB config loaded but no API keys are set (fill in Admin > PUPR API Keys).', flush=True)
-        # Dedicated Cloudflare provider table (URL + model) from dashboard DB
-        cfprov = payload.get('cloudflareProvider')
-        if isinstance(cfprov, dict):
-            ru = str(cfprov.get('runUrl') or cfprov.get('run_url') or '').strip()
-            if ru:
-                CLOUDFLARE_AI_RUN_URL = ru[:500]
-                os.environ['CLOUDFLARE_AI_RUN_URL'] = CLOUDFLARE_AI_RUN_URL
-            rf = str(cfprov.get('requestFormat') or cfprov.get('request_format') or '').strip().lower()
-            if rf in ('auto', 'messages', 'gemini_contents'):
-                CLOUDFLARE_AI_FORMAT = rf
-                os.environ['CLOUDFLARE_AI_FORMAT'] = rf
-            cm = str(cfprov.get('model') or '').strip()
-            if cm:
-                os.environ['CLOUDFLARE_AI_MODEL'] = cm[:200]
-            print('[config] Loaded Cloudflare provider from dashboard DB:', CLOUDFLARE_AI_RUN_URL[:80], os.environ.get('CLOUDFLARE_AI_MODEL',''), CLOUDFLARE_AI_FORMAT, flush=True)
         if isinstance(ai_cfg, dict) and apply_dashboard_ai_config(ai_cfg):
             os.environ['PUPR_AI_CONFIG_SOURCE'] = f"dashboard_db:{DASHBOARD_CONFIG_URL}"
             print('[config] Loaded PUPR AI config from dashboard DB (systemPrompt + limits)', flush=True)
         return payload
     except Exception as e:
-        print('[config] Dashboard PUPR config not loaded:', repr(e), flush=True)
+        print('[config] Dashboard config not loaded:', repr(e), flush=True)
         return None
+
+
+def refresh_dashboard_config(force=False):
+    """Reload config dari dashboard saat TTL habis. Saat dashboard gagal, config terakhir tetap dipakai."""
+    global _dashboard_config_last_attempt
+    if not DASHBOARD_CONFIG_URL:
+        return None
+    now = time.time()
+    if not force and _dashboard_config_last_attempt and (now - _dashboard_config_last_attempt) < DASHBOARD_CONFIG_REFRESH_SECONDS:
+        return None
+    if not _dashboard_config_lock.acquire(blocking=False):
+        return None
+    try:
+        now = time.time()
+        if not force and _dashboard_config_last_attempt and (now - _dashboard_config_last_attempt) < DASHBOARD_CONFIG_REFRESH_SECONDS:
+            return None
+        _dashboard_config_last_attempt = now
+        return load_dashboard_config()
+    finally:
+        _dashboard_config_lock.release()
 
 
 def deep_merge(base, override):
@@ -226,7 +207,7 @@ def deep_merge(base, override):
 
 
 # Minimal fallback only when dashboard API/DB and app.config.json are unavailable.
-# Runtime source of truth: dashboard API/DB (pupr.ai_config + keys) via load_dashboard_pupr_keys().
+# Runtime source of truth: dashboard API/DB (pupr.ai_config) via load_dashboard_config().
 FALLBACK_APP_CONFIG = {
     'app': {'language': 'id-ID'},
     'backend': {'host': '127.0.0.1', 'port': 8767},
@@ -266,8 +247,8 @@ def _dashboard_json_headers(extra=None):
     return headers
 
 
-def fetch_dashboard_pupr_config():
-    """Fetch PUPR config (API keys + AI config) from dashboard API/DB."""
+def fetch_dashboard_config():
+    """Fetch AI config from the dashboard API/DB (single source of truth)."""
     if not DASHBOARD_CONFIG_URL:
         return None
     headers = _dashboard_json_headers()
@@ -303,7 +284,7 @@ def fetch_dashboard_pupr_config():
 
 
 def load_app_config():
-    # Base fallback -> app.config.json (userData/packaged/local) -> dashboard API/DB runtime overrides happen in load_dashboard_pupr_keys/apply_dashboard_ai_config.
+    # Base fallback -> app.config.json (userData/packaged/local) -> dashboard API/DB runtime overrides happen in load_dashboard_config/apply_dashboard_ai_config.
     cfg = _json.loads(_json.dumps(FALLBACK_APP_CONFIG))  # deep-ish copy of simple dict
     candidates = []
     if os.environ.get('APP_CONFIG_PATH'):
@@ -342,9 +323,6 @@ TTS_API_URL = str(os.environ.get('TTS_API_URL') or _tts_cfg.get('apiUrl') or 'ht
 TTS_API_KEY = str(os.environ.get('TTS_API_KEY') or _tts_cfg.get('apiKey') or '').strip()
 TTS_MODEL = str(os.environ.get('TTS_MODEL') or _tts_cfg.get('model') or 'elevenlabs/eleven-v3-conversational').strip()
 TTS_TIMEOUT = float(os.environ.get('TTS_TIMEOUT') or _tts_cfg.get('timeoutSeconds') or 60)
-# Cloudflare Workers AI provider (run URL + model/format) - can be overridden by dashboard DB pupr_cloudflare_provider
-CLOUDFLARE_AI_RUN_URL = (os.environ.get('CLOUDFLARE_AI_RUN_URL') or 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run').strip()
-CLOUDFLARE_AI_FORMAT = (os.environ.get('CLOUDFLARE_AI_FORMAT') or 'auto').strip().lower()  # auto|messages|gemini_contents
 STT_LANGUAGE = (APP_CONFIG.get('app') or {}).get('language', 'id-ID')
 # Website reference (RAG-lite): AI can read selected official pages as grounded context.
 REFERENCE_WEBSITE_ENABLED = bool((APP_CONFIG.get('ai') or {}).get('referenceWebsiteEnabled', True))
@@ -604,8 +582,8 @@ def store_cached_answer(question_text, answer_text='', provider=None, model=None
     })
 
 
-# Load AI prompt/batasan + API keys from dashboard DB API (source of truth; overrides app.config.json defaults when available)
-load_dashboard_pupr_keys()
+# Load AI prompt/limits from the dashboard DB API (source of truth; overrides app.config.json defaults when available)
+load_dashboard_config()
 
 
 def sanitize_text(value):
@@ -647,6 +625,31 @@ def estimate_tokens(text):
     if not text:
         return 0
     return max(1, int((len(text) / 4) + 0.999))
+
+
+def _extract_chat_reply(payload):
+    """Accept the usual dashboard reply shapes so the contract can evolve server-side."""
+    if not isinstance(payload, dict):
+        return ''
+    sources = [payload.get('result'), payload]
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key in ('text', 'reply', 'answer', 'response', 'output', 'message'):
+            value = src.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+            if isinstance(value, dict):
+                for nested_key in ('content', 'text'):
+                    nested = value.get(nested_key)
+                    if isinstance(nested, str) and nested.strip():
+                        return nested
+        choices = src.get('choices')
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            content = (choices[0].get('message') or {}).get('content')
+            if isinstance(content, str) and content.strip():
+                return content
+    return ''
 
 
 def report_token_usage(provider, model=None, prompt_text='', response_text='', success=True, error_message='', usage=None, endpoint='/ai', metadata=None):
@@ -699,6 +702,7 @@ def report_token_usage(provider, model=None, prompt_text='', response_text='', s
 
 @app.route('/stt', methods=['POST'])
 def stt():
+    refresh_dashboard_config()
     if 'audio' not in request.files:
         return jsonify({'error': 'no audio'}), 400
     f = request.files['audio']
@@ -742,9 +746,6 @@ try:
 except Exception:
     TTS_CACHE_DIR = Path(tempfile.gettempdir()) / 'pupr-tts-cache'
     TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-# legacy local Coqui markers (compat)
-MODEL_PATH = os.environ.get('TTS_MODEL_PATH', '')
-CONFIG_PATH = os.environ.get('TTS_CONFIG_PATH', '')
 TTS_READY = bool(TTS_API_URL and TTS_API_KEY)
 
 def _redact_tts_key(url):
@@ -756,6 +757,7 @@ def _redact_tts_key(url):
 
 @app.route('/tts', methods=['POST'])
 def tts():
+    refresh_dashboard_config()
     data = request.get_json(force=True) or {}
     text = sanitize_text(data.get('text', ''))[:MAX_TEXT_CHARS]
     voice = str((data.get('voice') or data.get('speaker') or DEFAULT_TTS_SPEAKER or 'brian')).strip() or 'brian'
@@ -824,15 +826,6 @@ def tts():
         print('[tts] gateway exception', {'voice': voice, 'model': model, 'err': repr(e)}, flush=True)
         return jsonify({'error': 'TTS gateway request failed', 'detail': repr(e)[:800], 'voice': voice, 'model': model}), 502
 
-def mask_secret(value):
-    value = (value or '').strip()
-    if not value:
-        return ''
-    if len(value) <= 8:
-        return '*' * len(value)
-    return value[:4] + '…' + value[-4:]
-
-
 # Container/proxy deployment (mis. Docker) tidak datang dari 127.0.0.1 walau port-nya hanya
 # di-publish ke loopback host. Aktifkan PUPR_ALLOW_REMOTE_API=1 untuk tetap mengizinkan
 # /api-status & /api-config di topologi tersebut.
@@ -855,23 +848,29 @@ def _guard_local_api_routes():
         return jsonify({'error': 'Forbidden'}), 403
 
 
+def _iso_utc(ts):
+    try:
+        return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(float(ts))) if float(ts or 0) > 0 else ''
+    except Exception:
+        return ''
+
+
 @app.route('/api-status', methods=['GET'])
 def api_status():
     # Local-only debug/status endpoint (no secret values returned).
+    refresh_dashboard_config()
     return jsonify({
         'ok': True,
-        'keys_source': os.environ.get('PUPR_KEYS_SOURCE') or '',
         'ai_config_source': os.environ.get('PUPR_AI_CONFIG_SOURCE') or '',
         'dashboard_config_url': DASHBOARD_CONFIG_URL,
+        'dashboard_config_fetched_at': _iso_utc(_dashboard_config_last_fetch),
+        'dashboard_config_updated_at': _dashboard_config_updated_at,
+        'dashboard_config_refresh_seconds': DASHBOARD_CONFIG_REFRESH_SECONDS,
+        'dashboard_chat_url': DASHBOARD_CHAT_URL,
         'dashboard_usage_url': DASHBOARD_USAGE_URL,
         'dashboard_conversation_url': DASHBOARD_CONVERSATION_URL,
+        'dashboard_token_configured': bool(DASHBOARD_CONFIG_TOKEN),
         'conversation_cache_local_entries': len(CONVERSATION_CACHE),
-        'providers': {
-            'cloudflare': bool(os.environ.get('CLOUDFLARE_ACCOUNT_ID') and os.environ.get('CLOUDFLARE_API_TOKEN')),
-            'gemini': bool(os.environ.get('GEMINI_API_KEY')),
-            'openai': bool(os.environ.get('OPENAI_API_KEY')),
-        },
-        'cloudflare_model': os.environ.get('CLOUDFLARE_AI_MODEL', ''),
         'limits': {
             'maxHistoryMessages': MAX_HISTORY_MESSAGES,
             'maxTextChars': MAX_TEXT_CHARS,
@@ -885,22 +884,20 @@ def api_status():
             'ttsApiKeyConfigured': bool(TTS_API_KEY),
             'systemPromptChars': len(SYSTEM_PROMPT or ''),
         },
-        'masks': {
-            'CLOUDFLARE_ACCOUNT_ID': mask_secret(os.environ.get('CLOUDFLARE_ACCOUNT_ID', '')),
-            'CLOUDFLARE_API_TOKEN': mask_secret(os.environ.get('CLOUDFLARE_API_TOKEN', '')),
-            'GEMINI_API_KEY': mask_secret(os.environ.get('GEMINI_API_KEY', '')),
-            'OPENAI_API_KEY': mask_secret(os.environ.get('OPENAI_API_KEY', '')),
-        }
     })
 
 
 @app.route('/api-config', methods=['GET'])
 def api_config():
     # Expose effective runtime config loaded from dashboard API/DB (no secrets). Useful for UI/display/debug.
+    # Force refresh: app memanggil endpoint ini saat boot dan harus mendapat config terbaru.
+    refresh_dashboard_config(force=True)
     return jsonify({
         'ok': True,
         'source': os.environ.get('PUPR_AI_CONFIG_SOURCE') or 'app_config_or_default',
         'dashboard_config_url': DASHBOARD_CONFIG_URL,
+        'config_fetched_at': _iso_utc(_dashboard_config_last_fetch),
+        'config_updated_at': _dashboard_config_updated_at,
         'ai': {
             'systemPrompt': SYSTEM_PROMPT,
             'maxHistoryMessages': MAX_HISTORY_MESSAGES,
@@ -924,18 +921,11 @@ def ai():
     text = sanitize_text(data.get('text'))
     if not text:
         return jsonify({'error': 'text wajib berupa string yang tidak kosong'}), 400
-    # Lazy reload: API keys/config come from dashboard DB at startup; if dashboard started later, retry once.
-    # Also retry if no AI provider key is currently available (handles dashboard restart / DB update cases).
-    has_any_provider = bool(
-        (os.environ.get('CLOUDFLARE_ACCOUNT_ID') and os.environ.get('CLOUDFLARE_API_TOKEN'))
-        or os.environ.get('GEMINI_API_KEY')
-        or os.environ.get('OPENAI_API_KEY')
-    )
-    if not os.environ.get('PUPR_KEYS_SOURCE') or not has_any_provider:
-        try:
-            load_dashboard_pupr_keys()
-        except Exception:
-            pass
+    # Ambil config terbaru dari dashboard (TTL) tanpa restart backend; config terakhir dipakai bila gagal.
+    try:
+        refresh_dashboard_config()
+    except Exception as _cfg_err:
+        print('[config] refresh failed:', repr(_cfg_err), flush=True)
     global last_ai_request_at
     if not AI_LOCK.acquire(blocking=False):
         return jsonify({'error': 'Permintaan AI masih diproses, tunggu sebentar.'}), 429
@@ -972,189 +962,89 @@ def ai():
     except Exception as _re:
         print('[ref-web] failed:', repr(_re), flush=True)
 
-    # Prefer Cloudflare Workers AI when both credentials are configured.
-    cf_account = (os.environ.get('CLOUDFLARE_ACCOUNT_ID', '') or '').strip()
-    cf_token = (os.environ.get('CLOUDFLARE_API_TOKEN', '') or '').strip()
-    if cf_account and cf_token:
-        cf_model = (os.environ.get('CLOUDFLARE_AI_MODEL', '@cf/meta/llama-3.3-70b-instruct-fp8-fast') or '@cf/meta/llama-3.3-70b-instruct-fp8-fast').strip()
-        try:
-            cf_account.encode('ascii'); cf_model.encode('ascii')
-        except Exception:
-            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message='invalid_cloudflare_identifier_format')
-            AI_LOCK.release()
-            return jsonify({'error': 'Konfigurasi Cloudflare di database tidak valid (Account ID/Model). Perbaiki di Admin > PUPR AI Settings/API Keys lalu restart/coba lagi.', 'provider': 'cloudflare'}), 400
+    # Semua panggilan AI/chat lewat dashboard: satu sumber konfigurasi, satu-satunya jalur keluar.
+    # Tidak ada lagi pemanggilan langsung ke Cloudflare/Gemini/OpenAI dari backend ini.
+    chat_url = (DASHBOARD_CHAT_URL or '').strip()
+    if not chat_url:
+        report_token_usage(
+            'dashboard',
+            prompt_text=text,
+            success=False,
+            error_message='dashboard_chat_url_missing',
+            metadata={'dashboard_config_url': DASHBOARD_CONFIG_URL},
+        )
+        AI_LOCK.release()
+        return jsonify({
+            'error': 'Endpoint chat dashboard belum dikonfigurasi (DASHBOARD_CHAT_URL / backend.dashboardChatUrl).',
+            'detail': {'dashboard_config_url': DASHBOARD_CONFIG_URL},
+        }), 503
 
-        run_tmpl = (CLOUDFLARE_AI_RUN_URL or os.environ.get('CLOUDFLARE_AI_RUN_URL') or 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run').strip()
-        cf_url = run_tmpl.replace('{account_id}', cf_account).replace('{account}', cf_account).replace('$CLOUDFLARE_ACCOUNT_ID', cf_account).rstrip('/')
-        fmt = (CLOUDFLARE_AI_FORMAT or os.environ.get('CLOUDFLARE_AI_FORMAT') or 'auto').strip().lower()
-        use_gemini_contents = (fmt == 'gemini_contents') or (fmt == 'auto' and ('/google/' in (cf_model + cf_url) or cf_model.startswith('google/') or 'gemini' in cf_model.lower()))
-        # Match user curl: base .../ai/run with {"model":..., "input":{"contents"...}} (model in body).
-        # Legacy Workers AI chat models commonly use .../ai/run/{model} with {"messages"...} (no model in body).
-        if use_gemini_contents:
-            if cf_url.endswith('/ai/run/' + cf_model) or cf_url.endswith('/' + cf_model):
-                cf_url = cf_url[: -len('/' + cf_model)].rstrip('/') or cf_url
-            prompt_text = (SYSTEM_PROMPT + ("\n\n" + ref_ctx if ref_ctx else "") + "\n\nPertanyaan warga:\n" + text).strip()
-            cf_payload_obj = {"model": cf_model, "input": {"contents": [{"parts": [{"text": prompt_text}], "role": "user"}]}}
-        else:
-            if cf_url.endswith('/ai/run'):
-                cf_url = cf_url + '/' + cf_model
-            cf_messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-            if ref_ctx: cf_messages.append({'role': 'system', 'content': ref_ctx})
-            cf_messages.extend(conversation_history)
-            cf_payload_obj = {'messages': cf_messages}
+    chat_payload = {
+        'text': text,
+        'messages': list(conversation_history),
+        'systemPrompt': SYSTEM_PROMPT,
+        'language': STT_LANGUAGE,
+    }
+    if ref_ctx:
+        chat_payload['referenceContext'] = ref_ctx
 
-        cf_req = urllib.request.Request(cf_url, data=_json.dumps(cf_payload_obj).encode('utf-8'), headers={'Authorization': 'Bearer ' + cf_token, 'Content-Type': 'application/json'})
+    chat_headers = _dashboard_json_headers({'Content-Type': 'application/json'})
+    chat_out = None
+    chat_url_used = ''
+    chat_err = ''
+    for url in _dashboard_url_fallbacks(chat_url):
         try:
-            with urllib.request.urlopen(cf_req, timeout=60) as resp:
-                cf_out = _json.loads(resp.read().decode('utf-8'))
-            cf_result = cf_out.get('result', cf_out) if isinstance(cf_out, dict) else {}
-            cf_reply = ''
-            if isinstance(cf_result, dict):
-                cf_reply = sanitize_text(cf_result.get('response') or cf_result.get('text') or cf_result.get('choices', [{}])[0].get('message', {}).get('content', ''))[:MAX_REPLY_CHARS]
-            # Gemini/Google-style responses
-            if not cf_reply and isinstance(cf_out, dict):
-                try:
-                    cands = ((cf_out.get('result') or cf_out).get('candidates') or cf_out.get('candidates') or [])
-                    if cands:
-                        parts = (((cands[0] or {}).get('content') or {}).get('parts') or [])
-                        cf_reply = sanitize_text(''.join([str(p.get('text','')) for p in parts if isinstance(p, dict)]))[:MAX_REPLY_CHARS]
-                except Exception:
-                    pass
-            if not cf_reply and isinstance(cf_out, dict):
-                cf_reply = sanitize_text((cf_out.get('response') or ''))[:MAX_REPLY_CHARS]
-            if not cf_reply:
-                raise ValueError('Cloudflare mengembalikan respons kosong')
-            remember_message('assistant', cf_reply)
-            cf_usage = (cf_out.get('usage') or (cf_out.get('result') or {}).get('usage') or {}) if isinstance(cf_out, dict) else {}
-            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text=cf_reply, success=True, usage=cf_usage, metadata={'source': 'cloudflare_workers_ai', 'format': 'gemini_contents' if use_gemini_contents else 'messages', 'run_url': cf_url, 'ref_sources': (ref_meta or {}).get('sources', [])})
-            store_cached_answer(text, cf_reply, provider='cloudflare', model=cf_model)
-            AI_LOCK.release()
-            return jsonify({'text': cf_reply, 'provider': 'cloudflare', 'referenceSources': (ref_meta or {}).get('sources', [])})
-        except HTTPError as e:
-            err_body = ''
-            try: err_body = e.read().decode('utf-8', errors='ignore')[:400]
-            except Exception: pass
-            print('Cloudflare error:', repr(e), err_body[:120], flush=True)
-            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message=f'HTTP {e.code} {err_body}', metadata={'http_status': e.code, 'run_url': cf_url, 'format': 'gemini_contents' if use_gemini_contents else 'messages'})
-            if e.code == 429:
-                AI_LOCK.release(); return jsonify({'error': 'Cloudflare mencapai batas RPM/quota. Tunggu sebentar sebelum bertanya lagi.'}), 429
-        except Exception as e:
-            print('Cloudflare error:', repr(e), flush=True)
-            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message=str(e), metadata={'run_url': cf_url, 'format': 'gemini_contents' if use_gemini_contents else 'messages'})
-        # Don't mark unanswered for infra/provider failures; keep user-facing response clean (frontend will skip TTS).
-        try:
-            report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text='', success=False, error_message='provider_error_no_tts')
-        except Exception:
-            pass
-
-    # Fallback Gemini if key present
-    gkey = os.environ.get('GEMINI_API_KEY', '')
-    if gkey:
-        gemini_model = 'gemini-2.5-flash'
-        url = f'https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key=' + gkey
-        contents = []
-        for message in conversation_history:
-            contents.append({'role': 'user' if message['role'] == 'user' else 'model', 'parts': [{'text': message['content']}]})
-        gemini_system = SYSTEM_PROMPT + ("\n\n" + ref_ctx if ref_ctx else "")
-        payload = _json.dumps({
-            'system_instruction': {'parts': [{'text': gemini_system}]},
-            'contents': contents
-        }).encode('utf-8')
-        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                out = _json.loads(resp.read().decode('utf-8'))
-            reply = sanitize_text(out['candidates'][0]['content']['parts'][0]['text'])[:MAX_REPLY_CHARS]
-            remember_message('model', reply)
-            usage_meta = out.get('usageMetadata') or {}
-            gemini_usage = {
-                'prompt_tokens': int(usage_meta.get('promptTokenCount') or 0),
-                'completion_tokens': int(usage_meta.get('candidatesTokenCount') or 0),
-                'total_tokens': int(usage_meta.get('totalTokenCount') or 0),
-            }
-            report_token_usage('gemini', model=gemini_model, prompt_text=text, response_text=reply, success=True, usage=gemini_usage, metadata={'source': 'gemini_generate_content', 'ref_sources': (ref_meta or {}).get('sources', [])})
-            store_cached_answer(text, reply, provider='gemini', model=gemini_model)
-            AI_LOCK.release()
-            return jsonify({'text': reply, 'provider': 'gemini', 'referenceSources': (ref_meta or {}).get('sources', [])})
+            req = urllib.request.Request(url, data=_json.dumps(chat_payload).encode('utf-8'), headers=chat_headers, method='POST')
+            with urllib.request.urlopen(req, timeout=max(5, float(DASHBOARD_CHAT_TIMEOUT or 60))) as resp:
+                chat_out = _json.loads(resp.read().decode('utf-8'))
+            chat_url_used = url
+            break
         except HTTPError as e:
             err_body = ''
             try:
-                err_body = e.read().decode('utf-8', errors='ignore')[:300]
+                err_body = e.read().decode('utf-8', errors='ignore')[:400]
             except Exception:
                 pass
-            print('Gemini error:', repr(e), flush=True)
-            report_token_usage('gemini', model=gemini_model, prompt_text=text, response_text='', success=False, error_message=f'HTTP {e.code} {err_body}', metadata={'http_status': e.code})
+            chat_err = f'HTTP {e.code} {err_body}'.strip()
+            print('[ai] dashboard chat error', {'status': e.code, 'url': url, 'detail': err_body[:180]}, flush=True)
+            report_token_usage('dashboard', prompt_text=text, response_text='', success=False, error_message=chat_err, metadata={'endpoint': url, 'http_status': e.code})
             if e.code == 429:
                 AI_LOCK.release()
-                return jsonify({'error': 'Gemini mencapai batas RPM/quota. Tunggu sebentar sebelum bertanya lagi.'}), 429
+                return jsonify({'error': 'Dashboard AI mencapai batas kuota/rate limit. Tunggu sebentar lalu coba lagi.'}), 429
+            continue
         except Exception as e:
-            print('Gemini error:', repr(e), flush=True)
-            report_token_usage('gemini', model=gemini_model, prompt_text=text, response_text='', success=False, error_message=str(e))
-            # Continue to OpenAI fallback below.
-        store_cached_answer(text, '', provider='gemini', model=gemini_model, unanswered=True, metadata={'reason': 'provider_error'})
-    # Fallback OpenAI
-    okey = os.environ.get('OPENAI_API_KEY', '')
-    if not okey:
-        report_token_usage('none', model='', prompt_text=text, response_text='', success=False, error_message='no_api_key_configured', metadata={'keys_source': os.environ.get('PUPR_KEYS_SOURCE') or '', 'ai_config_source': os.environ.get('PUPR_AI_CONFIG_SOURCE') or '', 'dashboard_config_url': DASHBOARD_CONFIG_URL})
-        store_cached_answer(text, '', provider='none', model='', unanswered=True, metadata={'reason': 'no_api_key_configured'})
+            chat_err = repr(e)
+            print('[ai] dashboard chat exception', {'url': url, 'err': repr(e)}, flush=True)
+            report_token_usage('dashboard', prompt_text=text, response_text='', success=False, error_message=chat_err, metadata={'endpoint': url})
+            continue
+
+    if not isinstance(chat_out, dict):
+        store_cached_answer(text, '', provider='dashboard', unanswered=True, metadata={'reason': 'chat_unavailable', 'endpoint': chat_url_used or chat_url, 'error': chat_err[:300]})
         AI_LOCK.release()
         return jsonify({
-            'error': 'API key AI belum tersedia. Pastikan dashboard berjalan (default http://127.0.0.1:4321), key sudah disimpan di Admin > PUPR API Keys (DB), lalu restart/coba lagi.',
-            'detail': {
-                'keys_source': os.environ.get('PUPR_KEYS_SOURCE') or '',
-                'ai_config_source': os.environ.get('PUPR_AI_CONFIG_SOURCE') or '',
-                'dashboard_config_url': DASHBOARD_CONFIG_URL,
-            }
-        }), 400
-    openai_model = 'gpt-4o-mini'
-    oai_messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-    if ref_ctx:
-        oai_messages.append({'role': 'system', 'content': ref_ctx})
-    oai_messages.extend(conversation_history)
-    payload = _json.dumps({
-        'model': openai_model,
-        'messages': oai_messages
-    }).encode('utf-8')
-    req = urllib.request.Request(
-        'https://api.openai.com/v1/chat/completions',
-        data=payload,
-        headers={
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + okey
-        }
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            out = _json.loads(resp.read().decode('utf-8'))
-        reply = sanitize_text(out['choices'][0]['message']['content'])[:MAX_REPLY_CHARS]
-        remember_message('assistant', reply)
-        report_token_usage('openai', model=openai_model, prompt_text=text, response_text=reply, success=True, usage=out.get('usage') or {}, metadata={'source': 'openai_chat_completions', 'ref_sources': (ref_meta or {}).get('sources', [])})
-        store_cached_answer(text, reply, provider='openai', model=openai_model)
-        AI_LOCK.release()
-        return jsonify({'text': reply, 'provider': 'openai', 'referenceSources': (ref_meta or {}).get('sources', [])})
-    except HTTPError as e:
-        err_body = ''
-        try:
-            err_body = e.read().decode('utf-8', errors='ignore')[:300]
-        except Exception:
-            pass
-        print('OpenAI error:', repr(e), flush=True)
-        report_token_usage('openai', model=openai_model, prompt_text=text, response_text='', success=False, error_message=f'HTTP {e.code} {err_body}', metadata={'http_status': e.code})
-        store_cached_answer(text, '', provider='openai', model=openai_model, unanswered=True, metadata={'reason': f'http_{e.code}'})
+            'error': 'AI sedang tidak tersedia (endpoint chat dashboard tidak merespons).',
+            'detail': chat_err[:400],
+            'endpoint': chat_url_used or chat_url,
+        }), 502
+
+    reply = sanitize_text(_extract_chat_reply(chat_out))[:MAX_REPLY_CHARS]
+    if not reply:
+        store_cached_answer(text, '', provider='dashboard', unanswered=True, metadata={'reason': 'empty_reply', 'endpoint': chat_url_used})
         AI_LOCK.release()
         return jsonify({
-            'error': 'AI sedang tidak tersedia. Periksa quota/rate limit Gemini atau OpenAI.',
-            'detail': f'HTTP {e.code}'
-        }), 503
-    except Exception as e:
-        print('OpenAI error:', repr(e), flush=True)
-        report_token_usage('openai', model=openai_model, prompt_text=text, response_text='', success=False, error_message=str(e))
-        store_cached_answer(text, '', provider='openai', model=openai_model, unanswered=True, metadata={'reason': 'provider_error'})
-        AI_LOCK.release()
-        return jsonify({
-            'error': 'AI sedang tidak tersedia. Periksa quota/rate limit Gemini atau OpenAI.',
-            'detail': str(e)
-        }), 503
+            'error': 'Dashboard mengembalikan jawaban kosong.',
+            'detail': _json.dumps(chat_out)[:400],
+            'endpoint': chat_url_used,
+        }), 502
+
+    remember_message('assistant', reply)
+    provider = str(chat_out.get('provider') or 'dashboard')[:40]
+    model = str(chat_out.get('model') or '')[:120]
+    usage = chat_out.get('usage') if isinstance(chat_out.get('usage'), dict) else {}
+    report_token_usage('dashboard', model=model or None, prompt_text=text, response_text=reply, success=True, usage=usage, metadata={'endpoint': chat_url_used, 'provider': provider, 'ref_sources': (ref_meta or {}).get('sources', [])})
+    store_cached_answer(text, reply, provider=provider, model=model)
+    AI_LOCK.release()
+    return jsonify({'text': reply, 'provider': provider, 'model': model, 'referenceSources': (ref_meta or {}).get('sources', [])})
 
 @app.route('/', methods=['GET'])
 def test_page():
