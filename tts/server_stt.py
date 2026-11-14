@@ -3,9 +3,12 @@ import re
 import sys
 import tempfile
 import hashlib
+import html as _html
+import ipaddress
 import json as _json
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 import urllib.request
 import urllib.parse
 from html.parser import HTMLParser
@@ -155,6 +158,7 @@ def _dashboard_url_fallbacks(url):
 def load_dashboard_config(payload=None):
     """Load AI config (systemPrompt + limits) from the dashboard API/DB. Single source of truth."""
     global _dashboard_config_last_fetch, _dashboard_config_updated_at, _dashboard_config_last_attempt
+    global CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, CLOUDFLARE_AI_MODEL, CLOUDFLARE_AI_RUN_URL, CLOUDFLARE_AI_FORMAT
     if payload is None:
         payload = fetch_dashboard_config()
     if not isinstance(payload, dict):
@@ -164,6 +168,25 @@ def load_dashboard_config(payload=None):
     _dashboard_config_last_fetch = now
     _dashboard_config_updated_at = str(payload.get('aiUpdatedAt') or payload.get('updatedAt') or '')
     try:
+        # Dashboard adalah satu-satunya sumber data provider. Nilai lama tidak dipertahankan
+        # bila dashboard mengosongkan/menghapus provider.
+        keys = payload.get('keys')
+        if isinstance(keys, dict):
+            CLOUDFLARE_ACCOUNT_ID = str(keys.get('CLOUDFLARE_ACCOUNT_ID') or '').strip()
+            CLOUDFLARE_API_TOKEN = str(keys.get('CLOUDFLARE_API_TOKEN') or '').strip()
+        else:
+            CLOUDFLARE_ACCOUNT_ID = ''
+            CLOUDFLARE_API_TOKEN = ''
+        cfprov = payload.get('cloudflareProvider')
+        if isinstance(cfprov, dict):
+            CLOUDFLARE_AI_RUN_URL = str(cfprov.get('runUrl') or cfprov.get('run_url') or '').strip()[:500]
+            CLOUDFLARE_AI_MODEL = str(cfprov.get('model') or '').strip()[:200]
+            cf_format = str(cfprov.get('requestFormat') or cfprov.get('request_format') or '').strip().lower()
+            CLOUDFLARE_AI_FORMAT = cf_format if cf_format in ('auto', 'messages', 'gemini_contents') else 'auto'
+        else:
+            CLOUDFLARE_AI_RUN_URL = ''
+            CLOUDFLARE_AI_MODEL = ''
+            CLOUDFLARE_AI_FORMAT = 'auto'
         ai_cfg = payload.get('aiConfig')
         if isinstance(ai_cfg, dict) and apply_dashboard_ai_config(ai_cfg):
             os.environ['PUPR_AI_CONFIG_SOURCE'] = f"dashboard_db:{DASHBOARD_CONFIG_URL}"
@@ -323,6 +346,20 @@ TTS_API_URL = str(os.environ.get('TTS_API_URL') or _tts_cfg.get('apiUrl') or 'ht
 TTS_API_KEY = str(os.environ.get('TTS_API_KEY') or _tts_cfg.get('apiKey') or '').strip()
 TTS_MODEL = str(os.environ.get('TTS_MODEL') or _tts_cfg.get('model') or 'elevenlabs/eleven-v3-conversational').strip()
 TTS_TIMEOUT = float(os.environ.get('TTS_TIMEOUT') or _tts_cfg.get('timeoutSeconds') or 60)
+# Cloudflare Workers AI fallback. URL, model, dan key WAJIB berasal dari dashboard DB.
+# Tidak ada default hardcoded: bila public.pupr_cloudflare_provider belum diisi, fallback dinonaktifkan.
+CLOUDFLARE_ACCOUNT_ID = ''
+CLOUDFLARE_API_TOKEN = ''
+CLOUDFLARE_AI_MODEL = ''
+CLOUDFLARE_AI_RUN_URL = ''
+CLOUDFLARE_AI_FORMAT = 'auto'
+
+
+def _cloudflare_ready():
+    return bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN and CLOUDFLARE_AI_RUN_URL and CLOUDFLARE_AI_MODEL)
+PROVIDER_LABELS = {'cloudflare': 'Cloudflare Workers AI', 'gemini': 'Google Gemini', 'openai': 'OpenAI', 'dashboard': 'Dashboard AI'}
+LAST_LLM_PROVIDER = ''
+LAST_LLM_MODEL = ''
 STT_LANGUAGE = (APP_CONFIG.get('app') or {}).get('language', 'id-ID')
 # Website reference (RAG-lite): AI can read selected official pages as grounded context.
 REFERENCE_WEBSITE_ENABLED = bool((APP_CONFIG.get('ai') or {}).get('referenceWebsiteEnabled', True))
@@ -652,6 +689,89 @@ def _extract_chat_reply(payload):
     return ''
 
 
+def _datetime_context():
+    """Konteks waktu server agar AI tidak salah menjawab hari/tanggal/jam."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo('Asia/Jakarta'))
+    except Exception:
+        now = datetime.now(timezone.utc) + timedelta(hours=7)
+    days = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu']
+    months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+    return (
+        f"Waktu server saat ini: {days[now.weekday()]}, {now.day} {months[now.month - 1]} {now.year}, "
+        f"{now.strftime('%H:%M')} WIB (Asia/Jakarta). "
+        "Jika pengguna menanyakan hari, tanggal, atau jam, gunakan informasi ini."
+    )
+
+
+def _llm_display():
+    """Info LLM yang aman ditampilkan ke halaman test (tanpa config/secret)."""
+    provider = (LAST_LLM_PROVIDER or '').strip()
+    model = (LAST_LLM_MODEL or '').strip()
+    cf_ready = _cloudflare_ready()
+    # Provider Cloudflare hanya valid selama config dashboard masih tersedia.
+    if provider == 'cloudflare' and not cf_ready:
+        provider, model = '', ''
+    # Jika jawaban terakhir datang dari dashboard chat, tampilkan model yang dilaporkan dashboard.
+    if provider == 'dashboard':
+        return PROVIDER_LABELS['dashboard'], model
+    # Selain itu, tampilkan provider/model Cloudflare yang saat ini tersimpan di dashboard.
+    if cf_ready:
+        return PROVIDER_LABELS['cloudflare'], CLOUDFLARE_AI_MODEL
+    if DASHBOARD_CHAT_URL:
+        return PROVIDER_LABELS['dashboard'], ''
+    return PROVIDER_LABELS.get(provider, provider), model
+
+
+def call_cloudflare_ai(text, ref_ctx=''):
+    """Fallback langsung ke Cloudflare Workers AI bila dashboard chat tidak tersedia."""
+    if not _cloudflare_ready():
+        raise RuntimeError('cloudflare_not_configured')
+    dt_ctx = _datetime_context()
+    model = CLOUDFLARE_AI_MODEL.strip()
+    run_tmpl = CLOUDFLARE_AI_RUN_URL.strip()
+    url = run_tmpl.replace('{account_id}', CLOUDFLARE_ACCOUNT_ID).replace('{account}', CLOUDFLARE_ACCOUNT_ID).replace('$CLOUDFLARE_ACCOUNT_ID', CLOUDFLARE_ACCOUNT_ID).rstrip('/')
+    fmt = (CLOUDFLARE_AI_FORMAT or 'auto').strip().lower()
+    use_gemini = fmt == 'gemini_contents' or (fmt == 'auto' and ('/google/' in (model + url) or model.startswith('google/') or 'gemini' in model.lower()))
+    if use_gemini:
+        if url.endswith('/ai/run/' + model) or url.endswith('/' + model):
+            url = url[: -len('/' + model)].rstrip('/') or url
+        prompt_text = (SYSTEM_PROMPT + "\n\n" + dt_ctx + ("\n\n" + ref_ctx if ref_ctx else "") + "\n\nPertanyaan warga:\n" + text).strip()
+        payload = {'model': model, 'input': {'contents': [{'parts': [{'text': prompt_text}], 'role': 'user'}]}}
+    else:
+        if url.endswith('/ai/run'):
+            url = url + '/' + model
+        messages = [{'role': 'system', 'content': SYSTEM_PROMPT + "\n\n" + dt_ctx}]
+        if ref_ctx:
+            messages.append({'role': 'system', 'content': ref_ctx})
+        messages.extend(conversation_history)
+        payload = {'messages': messages}
+    req = urllib.request.Request(
+        url,
+        data=_json.dumps(payload).encode('utf-8'),
+        headers={'Authorization': 'Bearer ' + CLOUDFLARE_API_TOKEN, 'Content-Type': 'application/json'},
+        method='POST',
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        out = _json.loads(resp.read().decode('utf-8'))
+    reply = sanitize_text(_extract_chat_reply(out))[:MAX_REPLY_CHARS] if isinstance(out, dict) else ''
+    if not reply and isinstance(out, dict):
+        try:
+            candidates = ((out.get('result') or out).get('candidates') or out.get('candidates') or [])
+            if candidates:
+                parts = (((candidates[0] or {}).get('content') or {}).get('parts') or [])
+                reply = sanitize_text(''.join(str(p.get('text', '')) for p in parts if isinstance(p, dict)))[:MAX_REPLY_CHARS]
+        except Exception:
+            pass
+    if not reply and isinstance(out, dict):
+        reply = sanitize_text(out.get('response') or '')[:MAX_REPLY_CHARS]
+    if not reply:
+        raise ValueError('Cloudflare mengembalikan respons kosong')
+    usage = (out.get('usage') or (out.get('result') or {}).get('usage') or {}) if isinstance(out, dict) else {}
+    return reply, model, usage
+
+
 def report_token_usage(provider, model=None, prompt_text='', response_text='', success=True, error_message='', usage=None, endpoint='/ai', metadata=None):
     usage = usage if isinstance(usage, dict) else {}
     prompt_tokens = int(usage.get('prompt_tokens') or 0)
@@ -841,11 +961,37 @@ def _is_loopback_request():
         return False
 
 
+def _ip_is_local_or_private(value):
+    try:
+        addr = ipaddress.ip_address(str(value or '').strip().strip('[]'))
+        if getattr(addr, 'ipv4_mapped', None):
+            addr = addr.ipv4_mapped
+        return addr.is_loopback or addr.is_private
+    except Exception:
+        return False
+
+
+def _has_forwarding_headers():
+    return any(request.headers.get(h) for h in ('x-forwarded-for', 'x-real-ip', 'cf-connecting-ip', 'forwarded'))
+
+
+def _is_internal_request():
+    # Docker host -> container datang dari bridge IP private; internet publik/Cloudflare harus tetap ditolak.
+    if _has_forwarding_headers():
+        return False
+    if not _ip_is_local_or_private(request.remote_addr):
+        return False
+    host = (urllib.parse.urlparse('//' + (request.host or '')).hostname or '').lower()
+    return host in ('127.0.0.1', 'localhost', '::1') or _ip_is_local_or_private(host)
+
+
 @app.before_request
 def _guard_local_api_routes():
-    # Defense-in-depth: backend binds loopback, but block non-loopback callers if misconfigured/proxied.
-    if request.path in ('/api-status', '/api-config') and not ALLOW_REMOTE_LOCAL_API and not _is_loopback_request():
-        return jsonify({'error': 'Forbidden'}), 403
+    # /api-status & /api-config berisi konfigurasi internal: jangan pernah terexpose ke publik.
+    if request.path in ('/api-status', '/api-config'):
+        allowed = _is_internal_request() if ALLOW_REMOTE_LOCAL_API else _is_loopback_request()
+        if not allowed:
+            return jsonify({'error': 'Forbidden'}), 403
 
 
 def _iso_utc(ts):
@@ -871,6 +1017,8 @@ def api_status():
         'dashboard_conversation_url': DASHBOARD_CONVERSATION_URL,
         'dashboard_token_configured': bool(DASHBOARD_CONFIG_TOKEN),
         'conversation_cache_local_entries': len(CONVERSATION_CACHE),
+        'providers': {'cloudflare': _cloudflare_ready()},
+        'cloudflare_model': CLOUDFLARE_AI_MODEL,
         'limits': {
             'maxHistoryMessages': MAX_HISTORY_MESSAGES,
             'maxTextChars': MAX_TEXT_CHARS,
@@ -926,7 +1074,7 @@ def ai():
         refresh_dashboard_config()
     except Exception as _cfg_err:
         print('[config] refresh failed:', repr(_cfg_err), flush=True)
-    global last_ai_request_at
+    global last_ai_request_at, LAST_LLM_PROVIDER, LAST_LLM_MODEL
     if not AI_LOCK.acquire(blocking=False):
         return jsonify({'error': 'Permintaan AI masih diproses, tunggu sebentar.'}), 429
     now = time.monotonic()
@@ -962,8 +1110,38 @@ def ai():
     except Exception as _re:
         print('[ref-web] failed:', repr(_re), flush=True)
 
-    # Semua panggilan AI/chat lewat dashboard: satu sumber konfigurasi, satu-satunya jalur keluar.
-    # Tidak ada lagi pemanggilan langsung ke Cloudflare/Gemini/OpenAI dari backend ini.
+    def _try_cloudflare_fallback(reason):
+        """Jalur cadangan: dashboard chat belum ada/gagal, jawab langsung via Cloudflare."""
+        global LAST_LLM_PROVIDER, LAST_LLM_MODEL
+        if not _cloudflare_ready():
+            return None
+        try:
+            cf_reply, cf_model, cf_usage = call_cloudflare_ai(text, ref_ctx)
+        except HTTPError as e:
+            err_body = ''
+            try:
+                err_body = e.read().decode('utf-8', errors='ignore')[:400]
+            except Exception:
+                pass
+            print('[ai] cloudflare fallback error', {'status': e.code, 'reason': reason, 'detail': err_body[:180]}, flush=True)
+            report_token_usage('cloudflare', model=CLOUDFLARE_AI_MODEL, prompt_text=text, success=False, error_message=f'HTTP {e.code} {err_body}', metadata={'fallback_reason': reason})
+            if e.code == 429:
+                AI_LOCK.release()
+                return jsonify({'error': 'Cloudflare mencapai batas RPM/quota. Tunggu sebentar sebelum bertanya lagi.'}), 429
+            return None
+        except Exception as e:
+            print('[ai] cloudflare fallback exception', {'reason': reason, 'err': repr(e)}, flush=True)
+            report_token_usage('cloudflare', model=CLOUDFLARE_AI_MODEL, prompt_text=text, success=False, error_message=repr(e), metadata={'fallback_reason': reason})
+            return None
+        remember_message('assistant', cf_reply)
+        LAST_LLM_PROVIDER = 'cloudflare'
+        LAST_LLM_MODEL = cf_model
+        report_token_usage('cloudflare', model=cf_model, prompt_text=text, response_text=cf_reply, success=True, usage=cf_usage, metadata={'source': 'cloudflare_workers_ai', 'fallback_reason': reason, 'ref_sources': (ref_meta or {}).get('sources', [])})
+        store_cached_answer(text, cf_reply, provider='cloudflare', model=cf_model)
+        AI_LOCK.release()
+        return jsonify({'text': cf_reply, 'provider': 'cloudflare', 'model': cf_model, 'fallback': True, 'fallback_reason': reason, 'referenceSources': (ref_meta or {}).get('sources', [])})
+
+    # Utamakan dashboard chat; jika endpoint belum tersedia/gagal, pakai fallback Cloudflare.
     chat_url = (DASHBOARD_CHAT_URL or '').strip()
     if not chat_url:
         report_token_usage(
@@ -973,6 +1151,9 @@ def ai():
             error_message='dashboard_chat_url_missing',
             metadata={'dashboard_config_url': DASHBOARD_CONFIG_URL},
         )
+        fallback_resp = _try_cloudflare_fallback('dashboard_chat_url_missing')
+        if fallback_resp is not None:
+            return fallback_resp
         AI_LOCK.release()
         return jsonify({
             'error': 'Endpoint chat dashboard belum dikonfigurasi (DASHBOARD_CHAT_URL / backend.dashboardChatUrl).',
@@ -982,7 +1163,7 @@ def ai():
     chat_payload = {
         'text': text,
         'messages': list(conversation_history),
-        'systemPrompt': SYSTEM_PROMPT,
+        'systemPrompt': (SYSTEM_PROMPT + "\n\n" + _datetime_context()).strip(),
         'language': STT_LANGUAGE,
     }
     if ref_ctx:
@@ -1009,6 +1190,9 @@ def ai():
             print('[ai] dashboard chat error', {'status': e.code, 'url': url, 'detail': err_body[:180]}, flush=True)
             report_token_usage('dashboard', prompt_text=text, response_text='', success=False, error_message=chat_err, metadata={'endpoint': url, 'http_status': e.code})
             if e.code == 429:
+                fallback_resp = _try_cloudflare_fallback('dashboard_chat_rate_limited')
+                if fallback_resp is not None:
+                    return fallback_resp
                 AI_LOCK.release()
                 return jsonify({'error': 'Dashboard AI mencapai batas kuota/rate limit. Tunggu sebentar lalu coba lagi.'}), 429
             continue
@@ -1019,6 +1203,9 @@ def ai():
             continue
 
     if not isinstance(chat_out, dict):
+        fallback_resp = _try_cloudflare_fallback('dashboard_chat_unavailable')
+        if fallback_resp is not None:
+            return fallback_resp
         store_cached_answer(text, '', provider='dashboard', unanswered=True, metadata={'reason': 'chat_unavailable', 'endpoint': chat_url_used or chat_url, 'error': chat_err[:300]})
         AI_LOCK.release()
         return jsonify({
@@ -1029,6 +1216,9 @@ def ai():
 
     reply = sanitize_text(_extract_chat_reply(chat_out))[:MAX_REPLY_CHARS]
     if not reply:
+        fallback_resp = _try_cloudflare_fallback('dashboard_empty_reply')
+        if fallback_resp is not None:
+            return fallback_resp
         store_cached_answer(text, '', provider='dashboard', unanswered=True, metadata={'reason': 'empty_reply', 'endpoint': chat_url_used})
         AI_LOCK.release()
         return jsonify({
@@ -1043,12 +1233,29 @@ def ai():
     usage = chat_out.get('usage') if isinstance(chat_out.get('usage'), dict) else {}
     report_token_usage('dashboard', model=model or None, prompt_text=text, response_text=reply, success=True, usage=usage, metadata={'endpoint': chat_url_used, 'provider': provider, 'ref_sources': (ref_meta or {}).get('sources', [])})
     store_cached_answer(text, reply, provider=provider, model=model)
+    LAST_LLM_PROVIDER = provider
+    LAST_LLM_MODEL = model
     AI_LOCK.release()
     return jsonify({'text': reply, 'provider': provider, 'model': model, 'referenceSources': (ref_meta or {}).get('sources', [])})
 
 @app.route('/', methods=['GET'])
 def test_page():
-    return send_file(APP_ROOT / 'web' / 'index.html', mimetype='text/html')
+    # Info LLM dirender di server; browser tidak perlu memanggil /api-status atau /api-config.
+    try:
+        refresh_dashboard_config()
+    except Exception:
+        pass
+    label, model = _llm_display()
+    info = ' · '.join([x for x in (label, model) if x]) or 'belum terdeteksi'
+    try:
+        page = (APP_ROOT / 'web' / 'index.html').read_text(encoding='utf-8')
+    except Exception:
+        return jsonify({'error': 'Halaman test tidak ditemukan'}), 404
+    page = (page
+            .replace('__LLM_INFO__', _html.escape(info))
+            .replace('__LLM_PROVIDER__', _html.escape(label, quote=True))
+            .replace('__LLM_MODEL__', _html.escape(model, quote=True)))
+    return Response(page, mimetype='text/html', headers={'Cache-Control': 'no-store'})
 
 
 if __name__ == '__main__':

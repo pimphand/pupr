@@ -17,7 +17,7 @@
 <p>Tekan <b>Mulai Bicara</b>, bicara, lalu tekan <b>Berhenti</b>.</p>
 <button id="btn">Mulai Bicara</button>
 <div id="status"></div>
-<div id="llm">LLM: memuat...</div>
+<div id="llm" data-provider="__LLM_PROVIDER__" data-model="__LLM_MODEL__">LLM: __LLM_INFO__</div>
 <div id="log"></div>
 <audio id="player" controls></audio>
 
@@ -37,7 +37,7 @@ const PROVIDER_LABELS = {
   dashboard: 'Dashboard AI',
   cache: 'Cache jawaban',
 };
-let llmStatus = { label: '', model: '' };
+let llmStatus = { label: llmEl.dataset.provider || '', model: llmEl.dataset.model || '' };
 
 function setStatus(t) { statusEl.textContent = t; }
 function addLog(t) { logEl.textContent += t + '\n'; }
@@ -50,26 +50,6 @@ function renderLlm(provider, model) {
   const text = [label, resolvedModel].filter(Boolean).join(' · ');
   llmEl.textContent = 'LLM: ' + (text || 'belum terdeteksi');
 }
-
-// Sumber LLM: status runtime backend (versi lama: providers + cloudflare_model).
-async function loadLlmInfo() {
-  try {
-    const res = await fetch('/api-status', { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const s = await res.json();
-    const providers = s.providers || {};
-    const model = s.cloudflare_model || s.ai?.model || '';
-    if (providers.cloudflare) llmStatus = { label: 'Cloudflare Workers AI', model };
-    else if (providers.gemini) llmStatus = { label: 'Google Gemini', model };
-    else if (providers.openai) llmStatus = { label: 'OpenAI', model };
-    else if (s.dashboard_chat_url) llmStatus = { label: 'Dashboard AI', model: 'model ditentukan dashboard' };
-    else llmStatus = { label: '', model: '' };
-    renderLlm();
-  } catch (e) {
-    llmEl.textContent = 'LLM: gagal membaca /api-status (' + (e.message || e) + ')';
-  }
-}
-loadLlmInfo();
 
 async function postJson(url, body) {
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
