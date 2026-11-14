@@ -3,32 +3,238 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Test TTS / STT / AI</title>
+<meta name="color-scheme" content="light dark">
+<title>Asisten Suara PUPR</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #222; }
-  button { padding: 10px 18px; font-size: 16px; cursor: pointer; }
-  #log { margin-top: 20px; white-space: pre-wrap; background: #f5f5f5; padding: 12px; border-radius: 6px; min-height: 60px; }
-  #llm { margin-top: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; color: #0a6b5f; }
-  audio { margin-top: 12px; width: 100%; }
+  :root {
+    --bg: #fbfaf7;
+    --surface: #ffffff;
+    --ink: #1b1c19;
+    --muted: #6d6f66;
+    --line: #e2e0d8;
+    --accent: #1f5c4d;
+    --accent-ink: #ffffff;
+    --danger: #9c3b2b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131512;
+      --surface: #1a1d19;
+      --ink: #eceae3;
+      --muted: #9a9d93;
+      --line: #2b2f2a;
+      --accent: #79c3a7;
+      --accent-ink: #10241c;
+      --danger: #e19485;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main {
+    max-width: 660px;
+    margin: 0 auto;
+    padding: 56px 20px 72px;
+  }
+
+  .eyebrow {
+    margin: 0 0 10px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  h1 {
+    margin: 0;
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -.02em;
+    line-height: 1.2;
+  }
+  .lede {
+    margin: 12px 0 0;
+    max-width: 48ch;
+    color: var(--muted);
+  }
+
+  .panel {
+    margin: 36px 0 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 16px;
+    padding: 11px 0;
+  }
+  .row + .row { border-top: 1px solid var(--line); }
+  .label {
+    font-size: 13px;
+    color: var(--muted);
+    padding-top: 2px;
+  }
+  .value {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .mono { font-family: var(--mono); font-size: 13.5px; }
+
+  .status::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    vertical-align: 1px;
+  }
+  .status[data-state="busy"]::before { background: var(--accent); }
+  .status[data-state="recording"]::before,
+  .status[data-state="error"]::before { background: var(--danger); }
+  .status[data-state="error"] { color: var(--danger); }
+
+  .controls { margin: 32px 0 0; }
+  button {
+    min-width: 184px;
+    min-height: 46px;
+    padding: 0 22px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color .15s ease, color .15s ease;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+  button[data-mode="recording"] {
+    background: transparent;
+    color: var(--accent);
+  }
+  button:disabled {
+    cursor: progress;
+    opacity: .6;
+  }
+  .hint {
+    margin: 12px 0 0;
+    font-size: 14px;
+    color: var(--muted);
+  }
+
+  .transcript { margin: 44px 0 0; }
+  h2 {
+    margin: 0 0 4px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .lines {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-top: 1px solid var(--line);
+  }
+  .line {
+    display: grid;
+    grid-template-columns: 76px 1fr;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .who {
+    font-size: 13px;
+    color: var(--muted);
+    padding-top: 2px;
+  }
+  .say {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .line--note .say { color: var(--muted); font-size: 14px; }
+  .line--error { border-bottom-color: var(--danger); }
+  .line--error .who,
+  .line--error .say { color: var(--danger); }
+  .empty {
+    padding: 12px 0;
+    color: var(--muted);
+    font-size: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  audio {
+    display: block;
+    width: 100%;
+    margin-top: 32px;
+  }
+  audio[hidden] { display: none; }
 </style>
 </head>
 <body>
-<h1>Test Suara ke AI</h1>
-<p>Tekan <b>Mulai Bicara</b>, bicara, lalu tekan <b>Berhenti</b>.</p>
-<button id="btn">Mulai Bicara</button>
-<div id="status"></div>
-<div id="llm" data-provider="__LLM_PROVIDER__" data-model="__LLM_MODEL__">LLM: __LLM_INFO__</div>
-<div id="log"></div>
-<audio id="player" controls></audio>
+<main>
+  <header>
+    <p class="eyebrow">PUPR · Uji suara</p>
+    <h1>Asisten suara</h1>
+    <p class="lede">Bicara satu kali, lalu sistem mengubahnya menjadi teks, meminta jawaban ke AI, dan membacakan jawaban itu kembali.</p>
+  </header>
+
+  <section class="panel" aria-label="Status sistem">
+    <div class="row">
+      <span class="label">Status</span>
+      <span id="status" class="value status" role="status" aria-live="polite" data-state="idle">Siap merekam</span>
+    </div>
+    <div class="row">
+      <span class="label">Model</span>
+      <span id="llm" class="value mono" data-provider="__LLM_PROVIDER__" data-model="__LLM_MODEL__">__LLM_INFO__</span>
+    </div>
+    <div class="row">
+      <span class="label">Suara</span>
+      <span id="tts" class="value mono" data-provider="__TTS_PROVIDER__">__TTS_INFO__</span>
+    </div>
+  </section>
+
+  <section class="controls">
+    <button id="btn" type="button" data-mode="idle"><span id="btnLabel">Mulai bicara</span></button>
+    <p class="hint" id="hint">Tekan tombol, bicara, lalu tekan lagi untuk berhenti.</p>
+  </section>
+
+  <section class="transcript" aria-label="Percakapan">
+    <h2>Percakapan</h2>
+    <ol id="log" class="lines"><li class="empty">Belum ada percakapan.</li></ol>
+  </section>
+
+  <audio id="player" controls hidden></audio>
+</main>
 
 <script>
 const btn = document.getElementById('btn');
+const btnLabel = document.getElementById('btnLabel');
+const hintEl = document.getElementById('hint');
 const statusEl = document.getElementById('status');
 const llmEl = document.getElementById('llm');
 const logEl = document.getElementById('log');
 const player = document.getElementById('player');
 let recorder = null;
 let chunks = [];
+let audioUrl = null;
 
 const PROVIDER_LABELS = {
   cloudflare: 'Cloudflare Workers AI',
@@ -39,16 +245,40 @@ const PROVIDER_LABELS = {
 };
 let llmStatus = { label: llmEl.dataset.provider || '', model: llmEl.dataset.model || '' };
 
-function setStatus(t) { statusEl.textContent = t; }
-function addLog(t) { logEl.textContent += t + '\n'; }
+function setStatus(text, state) {
+  statusEl.textContent = text;
+  statusEl.dataset.state = state || 'idle';
+}
+
+function setButton(label, mode) {
+  btnLabel.textContent = label;
+  btn.dataset.mode = mode;
+  btn.disabled = mode === 'busy';
+}
+
+function addLog(who, text) {
+  const empty = logEl.querySelector('.empty');
+  if (empty) empty.remove();
+  const names = { user: 'Anda', ai: 'Asisten', note: 'Sistem', error: 'Gagal' };
+  const item = document.createElement('li');
+  item.className = 'line line--' + who;
+  const tag = document.createElement('span');
+  tag.className = 'who';
+  tag.textContent = names[who] || names.note;
+  const say = document.createElement('span');
+  say.className = 'say';
+  say.textContent = text;
+  item.append(tag, say);
+  logEl.append(item);
+  item.scrollIntoView({ block: 'nearest' });
+}
 
 function renderLlm(provider, model) {
   const label = provider
     ? (PROVIDER_LABELS[String(provider).toLowerCase()] || String(provider))
     : llmStatus.label;
   const resolvedModel = model || (label === llmStatus.label ? llmStatus.model : '');
-  const text = [label, resolvedModel].filter(Boolean).join(' · ');
-  llmEl.textContent = 'LLM: ' + (text || 'belum terdeteksi');
+  llmEl.textContent = [label, resolvedModel].filter(Boolean).join(' · ') || 'Belum terdeteksi';
 }
 
 async function postJson(url, body) {
@@ -82,16 +312,20 @@ async function toWav(blob) {
 }
 
 async function processAudio(blob) {
-  setStatus('Mengubah suara ke teks...');
+  setStatus('Mengubah suara ke teks…', 'busy');
   const form = new FormData();
   form.append('audio', await toWav(blob), 'speech.wav');
   const sttRes = await fetch('/stt', { method: 'POST', body: form });
   const stt = await sttRes.json();
   if (!sttRes.ok) throw new Error('STT: ' + (stt.error || sttRes.status));
-  if (!stt.text) { addLog('(suara tidak terdeteksi)'); return; }
-  addLog('Anda: ' + stt.text);
+  if (!stt.text) {
+    addLog('note', 'Suara tidak terdeteksi, coba bicara lebih dekat ke mikrofon.');
+    setStatus('Suara tidak terdeteksi');
+    return;
+  }
+  addLog('user', stt.text);
 
-  setStatus('Mengirim ke AI...');
+  setStatus('Meminta jawaban AI…', 'busy');
   const ai = await (await postJson('/ai', { text: stt.text })).json();
   const aiProvider = ai.provider ? String(ai.provider) : '';
   if (aiProvider.toLowerCase() === 'cache') {
@@ -99,21 +333,23 @@ async function processAudio(blob) {
   } else {
     renderLlm(aiProvider || 'AI', ai.model || '');
   }
-  addLog('AI: ' + ai.text);
+  addLog('ai', ai.text);
 
-  setStatus('Mengubah jawaban ke suara...');
+  setStatus('Mengubah jawaban ke suara…', 'busy');
   const tts = await postJson('/tts', { text: ai.text });
-  player.src = URL.createObjectURL(await tts.blob());
-  setStatus('Selesai. Jawaban sedang diputar.');
-  player.play().catch(() => setStatus('Selesai. Klik tombol ▶ di pemutar untuk mendengar jawaban.'));
+  if (audioUrl) URL.revokeObjectURL(audioUrl);
+  audioUrl = URL.createObjectURL(await tts.blob());
+  player.src = audioUrl;
+  player.hidden = false;
+  setStatus('Selesai, jawaban sedang diputar');
+  player.play().catch(() => setStatus('Selesai, tekan ▶ untuk memutar jawaban'));
 }
 
 btn.onclick = async () => {
   if (recorder && recorder.state === 'recording') {
     recorder.stop();
-    btn.disabled = true;
-    btn.textContent = 'Memproses...';
-    setStatus('Rekaman selesai, memproses...');
+    setButton('Memproses…', 'busy');
+    hintEl.textContent = 'Rekaman selesai, menunggu hasil.';
     return;
   }
   try {
@@ -126,18 +362,20 @@ btn.onclick = async () => {
       try {
         await processAudio(new Blob(chunks, { type: recorder.mimeType }));
       } catch (e) {
-        setStatus('Error');
-        addLog('Error: ' + e.message);
+        setStatus('Gagal memproses rekaman', 'error');
+        addLog('error', e.message);
       } finally {
-        btn.disabled = false;
-        btn.textContent = 'Mulai Bicara';
+        setButton('Mulai bicara', 'idle');
+        hintEl.textContent = 'Tekan tombol, bicara, lalu tekan lagi untuk berhenti.';
       }
     };
     recorder.start();
-    btn.textContent = 'Berhenti';
-    setStatus('Merekam...');
+    setButton('Berhenti', 'recording');
+    hintEl.textContent = 'Sedang merekam. Tekan berhenti kalau sudah selesai.';
+    setStatus('Merekam…', 'recording');
   } catch (e) {
-    setStatus('Mikrofon tidak bisa diakses: ' + e.message);
+    setStatus('Mikrofon tidak bisa diakses', 'error');
+    addLog('error', e.message);
   }
 };
 </script>
