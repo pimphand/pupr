@@ -926,6 +926,23 @@ def _redact_tts_key(url):
     except Exception:
         return ''
 
+def _wants_json_audio():
+    """Klien bisa minta audio base64 agar tidak bergantung pada proxy yang merusak respons biner."""
+    fmt = str(request.args.get('format') or '').strip().lower()
+    accept = (request.headers.get('Accept') or '').lower()
+    return fmt in ('json', 'base64') or 'application/json' in accept
+
+
+def _short_upstream_text(text, limit=400):
+    """Gateway/proxy bisa membalas halaman HTML; ringkas jadi satu baris untuk UI."""
+    raw = str(text or '')
+    if raw.lstrip().startswith('<'):
+        match = re.search(r'<title[^>]*>(.*?)</title>', raw, re.I | re.S)
+        title = re.sub(r'\s+', ' ', match.group(1)).strip() if match else 'halaman error dari gateway'
+        raw = 'HTML: ' + title
+    return re.sub(r'\s+', ' ', raw).strip()[:limit]
+
+
 def _sniff_audio_mime(data):
     """Cloudflare bisa mengembalikan MP3/WAV/OGG; tentukan dari beberapa byte pertama."""
     head = bytes(data or b'')[:16]
@@ -1046,12 +1063,19 @@ def tts():
     requested_voice = str(data.get('voice') or data.get('speaker') or '').strip()
     voice = requested_voice or (TTS_CLOUDFLARE_VOICE if provider == 'cloudflare' else DEFAULT_TTS_SPEAKER)
     model = str(data.get('model') or (TTS_CLOUDFLARE_MODEL if provider == 'cloudflare' else TTS_MODEL) or '').strip()
+    wants_json = _wants_json_audio()
     cache_key = hashlib.sha256(f'{provider}:{model}:{voice}:{text}'.encode('utf-8')).hexdigest()
     cache_path = TTS_CACHE_DIR / f'{cache_key}.audio'
     if cache_path.exists() and cache_path.stat().st_size > 0:
         with open(cache_path, 'rb') as fh:
             head = fh.read(16)
         mimetype, ext = _sniff_audio_mime(head)
+        if wants_json:
+            cached_audio = cache_path.read_bytes()
+            return jsonify({
+                'ok': True, 'cached': True, 'provider': provider, 'model': model, 'voice': voice,
+                'mimetype': mimetype, 'audio_base64': base64.b64encode(cached_audio).decode('ascii'),
+            })
         return send_file(cache_path, mimetype=mimetype, as_attachment=False, download_name=f'response.{ext}')
 
     try:
@@ -1063,6 +1087,11 @@ def tts():
             cache_path.write_bytes(audio_bytes)
         except Exception:
             pass
+        if wants_json:
+            return jsonify({
+                'ok': True, 'cached': False, 'provider': provider, 'model': model, 'voice': voice,
+                'mimetype': mimetype, 'audio_base64': base64.b64encode(audio_bytes).decode('ascii'),
+            })
         return Response(audio_bytes, mimetype=mimetype, headers={'Content-Disposition': f'inline; filename="response.{ext}"'})
     except HTTPError as e:
         err_body = ''
@@ -1086,12 +1115,12 @@ def tts():
             hint = None
         print('[tts] gateway HTTP error', {'provider': provider, 'voice': voice, 'model': model, 'status': e.code, 'url': _redact_tts_key(source_url), 'waf_block': waf_block, 'detail_preview': (err_body or '')[:180]}, flush=True)
         status = 502 if e.code >= 500 else (503 if e.code in (401, 403) else 502)
-        out = {'error': 'TTS gateway request failed', 'provider': provider, 'detail': err_body or str(e), 'http_status': e.code, 'voice': voice, 'model': model}
+        out = {'error': 'TTS gateway request failed', 'provider': provider, 'detail': _short_upstream_text(err_body or str(e)), 'http_status': e.code, 'voice': voice, 'model': model}
         if hint: out['hint'] = hint
         return jsonify(out), status
     except ValueError as e:
         print('[tts] non-audio response', {'provider': provider, 'model': model, 'err': str(e)[:180]}, flush=True)
-        return jsonify({'error': 'TTS response tidak berisi audio', 'provider': provider, 'detail': str(e)[:1200], 'model': model}), 502
+        return jsonify({'error': 'TTS response tidak berisi audio', 'provider': provider, 'detail': _short_upstream_text(e), 'voice': voice, 'model': model}), 502
     except (URLError, Exception) as e:
         print('[tts] gateway exception', {'provider': provider, 'voice': voice, 'model': model, 'err': repr(e)}, flush=True)
         return jsonify({'error': 'TTS gateway request failed', 'provider': provider, 'detail': repr(e)[:800], 'voice': voice, 'model': model}), 502

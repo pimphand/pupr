@@ -311,6 +311,32 @@ async function toWav(blob) {
   return new Blob([out], { type: 'audio/wav' });
 }
 
+function shortError(text) {
+  return String(text || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+// Audio diminta sebagai base64 supaya proxy/tunnel tidak memotong respons biner.
+async function synthesize(text) {
+  const r = await fetch('/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ text })
+  });
+  const ctype = (r.headers.get('content-type') || '').toLowerCase();
+  if (ctype.includes('application/json')) {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.audio_base64) {
+      throw new Error(shortError(data.detail || data.error) || ('/tts HTTP ' + r.status));
+    }
+    const binary = atob(data.audio_base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: data.mimetype || 'audio/mpeg' });
+  }
+  if (!r.ok) throw new Error(shortError(await r.text()) || ('/tts HTTP ' + r.status));
+  return r.blob();
+}
+
 async function processAudio(blob) {
   setStatus('Mengubah suara ke teks…', 'busy');
   const form = new FormData();
@@ -336,9 +362,9 @@ async function processAudio(blob) {
   addLog('ai', ai.text);
 
   setStatus('Mengubah jawaban ke suara…', 'busy');
-  const tts = await postJson('/tts', { text: ai.text });
+  const audio = await synthesize(ai.text);
   if (audioUrl) URL.revokeObjectURL(audioUrl);
-  audioUrl = URL.createObjectURL(await tts.blob());
+  audioUrl = URL.createObjectURL(audio);
   player.src = audioUrl;
   player.hidden = false;
   setStatus('Selesai, jawaban sedang diputar');
