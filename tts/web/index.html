@@ -103,6 +103,8 @@
   .status[data-state="recording"]::before,
   .status[data-state="error"]::before { background: var(--danger); }
   .status[data-state="error"] { color: var(--danger); }
+  #tts-diag { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  #tts-diag[data-error="1"] { color: var(--danger); }
 
   .controls { margin: 32px 0 0; }
   button {
@@ -209,6 +211,10 @@
       <span class="label">Suara</span>
       <span id="tts" class="value mono" data-provider="__TTS_PROVIDER__">__TTS_INFO__</span>
     </div>
+    <div class="row">
+      <span class="label">TTS terakhir</span>
+      <span id="tts-diag" class="value mono" data-error="__TTS_DIAG_ERROR__">__TTS_DIAG__</span>
+    </div>
   </section>
 
   <section class="controls">
@@ -230,6 +236,7 @@ const btnLabel = document.getElementById('btnLabel');
 const hintEl = document.getElementById('hint');
 const statusEl = document.getElementById('status');
 const llmEl = document.getElementById('llm');
+const ttsEl = document.getElementById('tts');
 const logEl = document.getElementById('log');
 const player = document.getElementById('player');
 let recorder = null;
@@ -239,6 +246,7 @@ let audioUrl = null;
 const PROVIDER_LABELS = {
   cloudflare: 'Cloudflare Workers AI',
   gemini: 'Google Gemini',
+  databyte: 'DataByte · ElevenLabs',
   openai: 'OpenAI',
   dashboard: 'Dashboard AI',
   cache: 'Cache jawaban',
@@ -311,6 +319,13 @@ async function toWav(blob) {
   return new Blob([out], { type: 'audio/wav' });
 }
 
+function renderTts(provider, model, voice) {
+  if (!provider) return;
+  const label = PROVIDER_LABELS[String(provider).toLowerCase()] || String(provider);
+  ttsEl.textContent = [label, model, voice].filter(Boolean).join(' · ');
+  ttsEl.dataset.provider = String(provider).toLowerCase();
+}
+
 function shortError(text) {
   return String(text || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240);
 }
@@ -328,6 +343,7 @@ async function synthesize(text) {
     if (!r.ok || !data.audio_base64) {
       throw new Error(shortError(data.detail || data.error) || ('/tts HTTP ' + r.status));
     }
+    renderTts(data.provider, data.model, data.voice);
     const binary = atob(data.audio_base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);

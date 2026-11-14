@@ -346,15 +346,21 @@ DEFAULT_TTS_SPEAKER = str(os.environ.get('TTS_VOICE') or _tts_cfg.get('defaultVo
 TTS_API_URL = str(os.environ.get('TTS_API_URL') or _tts_cfg.get('apiUrl') or 'https://ai.databyte.co.id/gateway/v1/audio/speech').strip()
 TTS_API_KEY = str(os.environ.get('TTS_API_KEY') or _tts_cfg.get('apiKey') or '').strip()
 TTS_MODEL = str(os.environ.get('TTS_MODEL') or _tts_cfg.get('model') or 'elevenlabs/eleven-v3-conversational').strip()
+# Bahasa keluaran TTS. Cloudflare Workers AI (Aura/MeloTTS) belum punya voice bahasa Indonesia,
+# jadi TTS_LANG=id mengarahkan /tts ke gateway ElevenLabs (DataByte).
+TTS_LANG = str(os.environ.get('TTS_LANG') or _tts_cfg.get('language') or 'id').strip().lower()
 # Model & voice TTS Cloudflare. Env CLOUDFLARE_MODEL/CLOUDFLARE_VOICE, lalu app.config.json,
 # lalu dashboard (aiConfig.ttsCloudflareModel / ttsCloudflareVoice) yang menimpa saat runtime.
-TTS_CLOUDFLARE_MODEL = str(os.environ.get('CLOUDFLARE_MODEL') or os.environ.get('CLOUDFLARE_TTS_MODEL') or _tts_cfg.get('cloudflareModel') or 'google/gemini-3.8-flash-tts').strip()
-TTS_CLOUDFLARE_VOICE = str(os.environ.get('CLOUDFLARE_VOICE') or _tts_cfg.get('cloudflareVoice') or 'Puck').strip()
+TTS_CLOUDFLARE_MODEL = str(os.environ.get('CLOUDFLARE_MODEL') or os.environ.get('CLOUDFLARE_TTS_MODEL') or _tts_cfg.get('cloudflareModel') or '@cf/deepgram/aura-1').strip()
+TTS_CLOUDFLARE_VOICE = str(os.environ.get('CLOUDFLARE_VOICE') or _tts_cfg.get('cloudflareVoice') or 'asteria').strip()
+# Run URL TTS dari env (dipakai bila dashboard belum mengirimkannya).
+TTS_CLOUDFLARE_RUN_URL = str(os.environ.get('CLOUDFLARE_URL') or os.environ.get('CLOUDFLARE_RUN_URL') or _tts_cfg.get('cloudflareRunUrl') or '').strip()
 TTS_TIMEOUT = float(os.environ.get('TTS_TIMEOUT') or _tts_cfg.get('timeoutSeconds') or 60)
 # Cloudflare Workers AI fallback. URL, model, dan key WAJIB berasal dari dashboard DB.
 # Tidak ada default hardcoded: bila public.pupr_cloudflare_provider belum diisi, fallback dinonaktifkan.
-CLOUDFLARE_ACCOUNT_ID = ''
-CLOUDFLARE_API_TOKEN = ''
+# Account/token boleh dari .env (fallback operasional TTS); URL & model LLM tetap hanya dari dashboard.
+CLOUDFLARE_ACCOUNT_ID = str(os.environ.get('CLOUDFLARE_ACCOUNT_ID') or '').strip()
+CLOUDFLARE_API_TOKEN = str(os.environ.get('CLOUDFLARE_API_TOKEN') or '').strip()
 CLOUDFLARE_AI_MODEL = ''
 CLOUDFLARE_AI_RUN_URL = ''
 CLOUDFLARE_AI_FORMAT = 'auto'
@@ -365,8 +371,8 @@ def _cloudflare_ready():
 
 
 def _cloudflare_tts_configured():
-    """TTS Cloudflare hanya aktif bila dashboard mengirim account, token, run URL, dan model."""
-    return bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN and CLOUDFLARE_AI_RUN_URL and TTS_CLOUDFLARE_MODEL)
+    """TTS Cloudflare aktif bila account, token, run URL (dashboard atau env), dan model tersedia."""
+    return bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN and (CLOUDFLARE_AI_RUN_URL or TTS_CLOUDFLARE_RUN_URL) and TTS_CLOUDFLARE_MODEL)
 
 
 def _cloudflare_url(template):
@@ -755,14 +761,46 @@ def _llm_display():
     return PROVIDER_LABELS.get(provider, provider), model
 
 
-def _effective_tts_provider():
-    """Provider TTS yang benar-benar dipakai /tts saat ini."""
-    provider = (TTS_PROVIDER or 'cloudflare').strip().lower()
+def _databyte_tts_ready():
+    return bool(TTS_API_URL and TTS_API_KEY)
+
+
+def _tts_language():
+    """Bahasa TTS yang diminta (id/en/...). Default id karena asisten ini berbahasa Indonesia."""
+    lang = (TTS_LANG or 'id').strip().lower()
+    if lang.startswith('id'):
+        return 'id'
+    if lang.startswith('en'):
+        return 'en'
+    return lang
+
+
+def _provider_supports_language(provider):
+    """Model TTS Cloudflare yang tersedia hanya Inggris/Spanyol; Indonesia harus lewat DataByte."""
+    if provider == 'cloudflare':
+        return _tts_language() != 'id'
+    return True
+
+
+def _resolve_tts_provider(requested=''):
+    """Provider efektif. Teks Indonesia diarahkan ke gateway ber-voice Indonesia bila tersedia."""
+    explicit = bool(str(requested or '').strip())
+    provider = str(requested or TTS_PROVIDER or 'cloudflare').strip().lower()
     if provider not in ('cloudflare', 'databyte'):
         provider = 'cloudflare'
-    if provider == 'cloudflare' and not _cloudflare_tts_configured() and (TTS_API_URL and TTS_API_KEY):
+    if not _provider_supports_language(provider) and _databyte_tts_ready():
         return 'databyte'
+    if not explicit:
+        if provider == 'cloudflare' and not _cloudflare_tts_configured() and _databyte_tts_ready():
+            return 'databyte'
+        if provider == 'databyte' and not _databyte_tts_ready() and _cloudflare_tts_configured():
+            return 'cloudflare'
     return provider
+
+
+def _effective_tts_provider():
+    """Provider TTS yang benar-benar dipakai /tts saat ini."""
+    return _resolve_tts_provider()
 
 
 def _tts_display():
@@ -918,6 +956,18 @@ except Exception:
     TTS_CACHE_DIR = Path(tempfile.gettempdir()) / 'pupr-tts-cache'
     TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 TTS_READY = bool(_cloudflare_tts_configured() or (TTS_API_URL and TTS_API_KEY))
+# Diagnosa percobaan TTS terakhir (tanpa secret) supaya kegagalan lewat tunnel bisa dibaca dari halaman.
+TTS_LAST_DIAG = {'at': '', 'stage': 'idle', 'provider': '', 'model': '', 'voice': '', 'http_status': 0, 'bytes': 0, 'ms': 0, 'error': ''}
+
+
+def _tts_diag(stage, provider='', model='', voice='', http_status=0, nbytes=0, ms=0, error=''):
+    global TTS_LAST_DIAG
+    TTS_LAST_DIAG = {
+        'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'stage': stage, 'provider': provider, 'model': model, 'voice': voice,
+        'http_status': int(http_status or 0), 'bytes': int(nbytes or 0), 'ms': int(ms or 0),
+        'error': _short_upstream_text(error or '')[0:300] if error else '',
+    }
 
 def _redact_tts_key(url):
     try:
@@ -958,15 +1008,41 @@ def _sniff_audio_mime(data):
         return 'audio/mp4', 'm4a'
     return 'audio/mpeg', 'mp3'
 
-def _cloudflare_tts(text, voice=''):
-    """TTS Cloudflare Workers AI: POST {model, input:{text, voice}} ke run URL dari dashboard."""
+# Model @cf/* (Workers AI native) memakai endpoint per-model dengan body datar, bukan {model, input}.
+# Daftar voice Aura dari Cloudflare; voice lain (mis. Kore milik Gemini) ditolak 400 oleh upstream.
+AURA_VOICES = ('angus', 'asteria', 'arcas', 'orion', 'orpheus', 'athena', 'luna', 'zeus', 'perseus', 'helios', 'hera', 'stella')
+MELOTTS_LANGS = ('en', 'es', 'fr', 'jp', 'kr', 'zh')
+CLOUDFLARE_TTS_LANG = str(os.environ.get('CLOUDFLARE_LANG') or 'en').strip().lower()
+
+
+def _cloudflare_tts_url(model):
+    base = _cloudflare_url(CLOUDFLARE_AI_RUN_URL or TTS_CLOUDFLARE_RUN_URL)
+    return f"{base}/{model}" if str(model or '').startswith('@cf/') else base
+
+
+def _cloudflare_tts_payload(text, voice, model):
+    """Body request sesuai jenis model: partner (unified) vs @cf/* (per-model)."""
+    if not str(model or '').startswith('@cf/'):
+        input_body = {'text': text}
+        if voice:
+            input_body['voice'] = voice
+        return _json.dumps({'model': model, 'input': input_body}).encode('utf-8')
+    if 'melotts' in model:
+        lang = CLOUDFLARE_TTS_LANG if CLOUDFLARE_TTS_LANG in MELOTTS_LANGS else 'en'
+        return _json.dumps({'prompt': text, 'lang': lang}).encode('utf-8')
+    body = {'text': text}
+    if str(voice or '').strip().lower() in AURA_VOICES:
+        body['speaker'] = str(voice).strip().lower()
+    return _json.dumps(body).encode('utf-8')
+
+
+def _cloudflare_tts(text, voice='', model=''):
+    """TTS Cloudflare Workers AI. Model @cf/* lewat path per-model, model partner lewat {model, input}."""
     if not _cloudflare_tts_configured():
         raise RuntimeError('cloudflare_tts_not_configured')
-    url = _cloudflare_url(CLOUDFLARE_AI_RUN_URL)
-    input_body = {'text': text}
-    if voice:
-        input_body['voice'] = voice
-    payload = _json.dumps({'model': TTS_CLOUDFLARE_MODEL, 'input': input_body}).encode('utf-8')
+    model = str(model or TTS_CLOUDFLARE_MODEL or '').strip()
+    url = _cloudflare_tts_url(model)
+    payload = _cloudflare_tts_payload(text, voice, model)
     req = urllib.request.Request(
         url,
         data=payload,
@@ -984,10 +1060,11 @@ def _cloudflare_tts(text, voice=''):
     if not raw:
         raise ValueError('Cloudflare TTS mengembalikan audio kosong')
     if 'json' in ctype or (raw[:1] == b'{' and b'"' in raw[:80]):
-        detail = raw.decode('utf-8', errors='ignore')[:1200]
+        body_text = raw.decode('utf-8', errors='ignore')
+        detail = body_text[:1200]
         parsed = {}
         try:
-            parsed = _json.loads(detail)
+            parsed = _json.loads(body_text)
         except Exception:
             pass
         result = parsed.get('result') if isinstance(parsed, dict) else None
@@ -1005,7 +1082,7 @@ def _cloudflare_tts(text, voice=''):
                 raise ValueError('Cloudflare TTS base64 tidak valid: ' + repr(e))
             mimetype, ext = _sniff_audio_mime(audio)
             return audio, mimetype, ext
-        print('[tts] cloudflare non-audio response', {'model': TTS_CLOUDFLARE_MODEL, 'url': _redact_tts_key(url), 'ctype': ctype, 'detail_preview': detail[:180]}, flush=True)
+        print('[tts] cloudflare non-audio response', {'model': model, 'url': _redact_tts_key(url), 'ctype': ctype, 'detail_preview': detail[:180]}, flush=True)
         raise ValueError('Cloudflare TTS returned non-audio response: ' + detail)
     mimetype, ext = _sniff_audio_mime(raw)
     return raw, mimetype, ext
@@ -1048,28 +1125,31 @@ def tts():
     if not text:
         return jsonify({'error': 'no text'}), 400
 
-    provider = str(data.get('provider') or TTS_PROVIDER or 'cloudflare').strip().lower()
-    if provider not in ('cloudflare', 'databyte'):
-        provider = 'cloudflare'
+    provider = _resolve_tts_provider(data.get('provider'))
     if provider == 'cloudflare' and not _cloudflare_tts_configured():
-        # Kredensial Cloudflare berasal dari dashboard; bila belum ada, pakai gateway lama.
-        if TTS_API_URL and TTS_API_KEY:
-            provider = 'databyte'
-        else:
-            return jsonify({'error': 'TTS Cloudflare belum dikonfigurasi (account/token/run URL/model dari dashboard).'}), 503
-    if provider == 'databyte' and not (TTS_API_URL and TTS_API_KEY):
+        return jsonify({'error': 'TTS Cloudflare belum dikonfigurasi (account/token/run URL/model dari dashboard).'}), 503
+    if provider == 'databyte' and not _databyte_tts_ready():
         return jsonify({'error': 'TTS remote gateway belum dikonfigurasi (TTS_API_URL/TTS_API_KEY).'}), 503
 
     requested_voice = str(data.get('voice') or data.get('speaker') or '').strip()
     voice = requested_voice or (TTS_CLOUDFLARE_VOICE if provider == 'cloudflare' else DEFAULT_TTS_SPEAKER)
     model = str(data.get('model') or (TTS_CLOUDFLARE_MODEL if provider == 'cloudflare' else TTS_MODEL) or '').strip()
     wants_json = _wants_json_audio()
+    probe = bool(data.get('probe') or request.args.get('probe'))
+    started_at = time.time()
+    _tts_diag('request', provider=provider, model=model, voice=voice)
     cache_key = hashlib.sha256(f'{provider}:{model}:{voice}:{text}'.encode('utf-8')).hexdigest()
     cache_path = TTS_CACHE_DIR / f'{cache_key}.audio'
     if cache_path.exists() and cache_path.stat().st_size > 0:
         with open(cache_path, 'rb') as fh:
             head = fh.read(16)
         mimetype, ext = _sniff_audio_mime(head)
+        _tts_diag('cache_hit', provider=provider, model=model, voice=voice, nbytes=cache_path.stat().st_size, ms=int((time.time() - started_at) * 1000))
+        if probe:
+            return jsonify({
+                'ok': True, 'probe': True, 'cached': True, 'provider': provider, 'model': model, 'voice': voice,
+                'mimetype': mimetype, 'bytes': cache_path.stat().st_size,
+            })
         if wants_json:
             cached_audio = cache_path.read_bytes()
             return jsonify({
@@ -1080,13 +1160,19 @@ def tts():
 
     try:
         if provider == 'cloudflare':
-            audio_bytes, mimetype, ext = _cloudflare_tts(text, voice)
+            audio_bytes, mimetype, ext = _cloudflare_tts(text, voice, model)
         else:
             audio_bytes, mimetype, ext = _databyte_tts(text, voice, model)
+        _tts_diag('ok', provider=provider, model=model, voice=voice, nbytes=len(audio_bytes), ms=int((time.time() - started_at) * 1000))
         try:
             cache_path.write_bytes(audio_bytes)
         except Exception:
             pass
+        if probe:
+            return jsonify({
+                'ok': True, 'probe': True, 'cached': False, 'provider': provider, 'model': model, 'voice': voice,
+                'mimetype': mimetype, 'bytes': len(audio_bytes), 'ms': int((time.time() - started_at) * 1000),
+            })
         if wants_json:
             return jsonify({
                 'ok': True, 'cached': False, 'provider': provider, 'model': model, 'voice': voice,
@@ -1099,10 +1185,13 @@ def tts():
             err_body = e.read().decode('utf-8', errors='ignore')[:1600]
         except Exception:
             pass
-        source_url = _cloudflare_url(CLOUDFLARE_AI_RUN_URL) if provider == 'cloudflare' else TTS_API_URL
+        source_url = _cloudflare_tts_url(model) if provider == 'cloudflare' else TTS_API_URL
         waf_block = e.code == 403 and ('cloudflare' in (err_body or '').lower() or 'access denied' in (err_body or '').lower())
         if provider == 'cloudflare':
             hint = 'Periksa CLOUDFLARE_API_TOKEN, account ID, dan model TTS Cloudflare di dashboard (401/403).' if e.code in (401, 403) else None
+        elif e.code == 402 or 'insufficient_balance' in (err_body or ''):
+            hint = ('Saldo gateway DataByte habis (402 insufficient_balance). Top-up AI Gateway DataByte, '
+                    'atau set TTS_LANG=en + TTS_PROVIDER=cloudflare untuk voice Inggris Cloudflare.')
         elif waf_block:
             hint = (
                 'DataByte gateway diblokir Cloudflare/WAF (403 Access denied) untuk request dari server ini. '
@@ -1114,15 +1203,18 @@ def tts():
         else:
             hint = None
         print('[tts] gateway HTTP error', {'provider': provider, 'voice': voice, 'model': model, 'status': e.code, 'url': _redact_tts_key(source_url), 'waf_block': waf_block, 'detail_preview': (err_body or '')[:180]}, flush=True)
-        status = 502 if e.code >= 500 else (503 if e.code in (401, 403) else 502)
+        status = 502 if e.code >= 500 else (503 if e.code in (401, 402, 403) else 502)
+        _tts_diag('error', provider=provider, model=model, voice=voice, http_status=e.code, ms=int((time.time() - started_at) * 1000), error=err_body or str(e))
         out = {'error': 'TTS gateway request failed', 'provider': provider, 'detail': _short_upstream_text(err_body or str(e)), 'http_status': e.code, 'voice': voice, 'model': model}
         if hint: out['hint'] = hint
         return jsonify(out), status
     except ValueError as e:
         print('[tts] non-audio response', {'provider': provider, 'model': model, 'err': str(e)[:180]}, flush=True)
+        _tts_diag('non_audio', provider=provider, model=model, voice=voice, ms=int((time.time() - started_at) * 1000), error=str(e))
         return jsonify({'error': 'TTS response tidak berisi audio', 'provider': provider, 'detail': _short_upstream_text(e), 'voice': voice, 'model': model}), 502
     except (URLError, Exception) as e:
         print('[tts] gateway exception', {'provider': provider, 'voice': voice, 'model': model, 'err': repr(e)}, flush=True)
+        _tts_diag('exception', provider=provider, model=model, voice=voice, ms=int((time.time() - started_at) * 1000), error=repr(e))
         return jsonify({'error': 'TTS gateway request failed', 'provider': provider, 'detail': repr(e)[:800], 'voice': voice, 'model': model}), 502
 
 # Container/proxy deployment (mis. Docker) tidak datang dari 127.0.0.1 walau port-nya hanya
@@ -1209,6 +1301,7 @@ def api_status():
             'ttsModel': TTS_MODEL,
             'ttsCloudflareModel': TTS_CLOUDFLARE_MODEL,
             'ttsCloudflareVoice': TTS_CLOUDFLARE_VOICE,
+            'ttsLastDiag': TTS_LAST_DIAG,
             'ttsCloudflareReady': _cloudflare_tts_configured(),
             'ttsApiUrl': _redact_tts_key(TTS_API_URL),
             'ttsApiKeyConfigured': bool(TTS_API_KEY),
@@ -1236,7 +1329,7 @@ def api_config():
             'cooldownSeconds': AI_COOLDOWN_SECONDS,
         },
         'app': {'language': STT_LANGUAGE},
-        'tts': {'defaultSpeaker': DEFAULT_TTS_SPEAKER, 'provider': TTS_PROVIDER, 'model': TTS_MODEL, 'cloudflareModel': TTS_CLOUDFLARE_MODEL, 'cloudflareVoice': TTS_CLOUDFLARE_VOICE, 'cloudflareReady': _cloudflare_tts_configured(), 'apiUrl': _redact_tts_key(TTS_API_URL), 'apiKeyConfigured': bool(TTS_API_KEY)},
+        'tts': {'defaultSpeaker': DEFAULT_TTS_SPEAKER, 'provider': TTS_PROVIDER, 'effectiveProvider': _effective_tts_provider(), 'language': _tts_language(), 'model': TTS_MODEL, 'cloudflareModel': TTS_CLOUDFLARE_MODEL, 'cloudflareVoice': TTS_CLOUDFLARE_VOICE, 'cloudflareReady': _cloudflare_tts_configured(), 'apiUrl': _redact_tts_key(TTS_API_URL), 'apiKeyConfigured': bool(TTS_API_KEY)},
         'backend': {'host': os.environ.get('BACKEND_HOST') or (APP_CONFIG.get('backend') or {}).get('host') or '127.0.0.1', 'port': int(os.environ.get('BACKEND_PORT') or (APP_CONFIG.get('backend') or {}).get('port') or 8767)},
     })
 
@@ -1430,6 +1523,11 @@ def test_page():
     label, model = _llm_display()
     info = ' · '.join([x for x in (label, model) if x]) or 'belum terdeteksi'
     tts_provider, tts_info = _tts_display()
+    diag = TTS_LAST_DIAG if isinstance(TTS_LAST_DIAG, dict) else {}
+    if diag.get('error'):
+        tts_diag_text = ' · '.join([x for x in [diag.get('stage'), diag.get('provider'), diag.get('model'), diag.get('error')] if x])
+    else:
+        tts_diag_text = 'belum ada percobaan TTS'
     try:
         page = (APP_ROOT / 'web' / 'index.html').read_text(encoding='utf-8')
     except Exception:
@@ -1439,7 +1537,9 @@ def test_page():
             .replace('__LLM_PROVIDER__', _html.escape(label, quote=True))
             .replace('__LLM_MODEL__', _html.escape(model, quote=True))
             .replace('__TTS_INFO__', _html.escape(tts_info or 'belum terdeteksi'))
-            .replace('__TTS_PROVIDER__', _html.escape(tts_provider, quote=True)))
+            .replace('__TTS_PROVIDER__', _html.escape(tts_provider, quote=True))
+            .replace('__TTS_DIAG__', _html.escape(tts_diag_text))
+            .replace('__TTS_DIAG_ERROR__', '1' if diag.get('error') else '0'))
     return Response(page, mimetype='text/html', headers={'Cache-Control': 'no-store'})
 
 
