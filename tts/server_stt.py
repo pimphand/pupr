@@ -356,6 +356,9 @@ TTS_CLOUDFLARE_VOICE = str(os.environ.get('CLOUDFLARE_VOICE') or _tts_cfg.get('c
 # Run URL TTS dari env (dipakai bila dashboard belum mengirimkannya).
 TTS_CLOUDFLARE_RUN_URL = str(os.environ.get('CLOUDFLARE_URL') or os.environ.get('CLOUDFLARE_RUN_URL') or _tts_cfg.get('cloudflareRunUrl') or '').strip()
 TTS_TIMEOUT = float(os.environ.get('TTS_TIMEOUT') or _tts_cfg.get('timeoutSeconds') or 60)
+# Provider TTS Google (Google Translate TTS): gratis, tanpa API key, punya voice bahasa Indonesia.
+# Set TTS_PROVIDER=google (atau ttsProvider=google di dashboard) untuk memakainya.
+TTS_GOOGLE_ENABLED = str(os.environ.get('TTS_GOOGLE_ENABLED') or _tts_cfg.get('googleEnabled') or '1').strip().lower() not in ('0', 'false', 'no', 'off')
 # Cloudflare Workers AI fallback. URL, model, dan key WAJIB berasal dari dashboard DB.
 # Tidak ada default hardcoded: bila public.pupr_cloudflare_provider belum diisi, fallback dinonaktifkan.
 # Account/token boleh dari .env (fallback operasional TTS); URL & model LLM tetap hanya dari dashboard.
@@ -539,7 +542,11 @@ def apply_dashboard_ai_config(cfg):
         if isinstance(cfg.get('ttsApiKey'), str) and cfg.get('ttsApiKey').strip() and not os.environ.get('TTS_API_KEY'):
             globals()['TTS_API_KEY'] = cfg.get('ttsApiKey').strip()
         prov = cfg.get('ttsProvider')
-        if isinstance(prov, str) and prov.strip().lower() in ('cloudflare', 'databyte'):
+        # TTS_PROVIDER=google di env sengaja diprioritaskan supaya jalur gratis bisa dinyalakan
+        # tanpa mengubah setelan dashboard.
+        env_provider = (os.environ.get('TTS_PROVIDER') or '').strip().lower()
+        if (isinstance(prov, str) and prov.strip().lower() in ('cloudflare', 'databyte', 'google')
+                and env_provider != 'google'):
             TTS_PROVIDER = prov.strip().lower()
         cf_tts = cfg.get('ttsCloudflareModel')
         if isinstance(cf_tts, str) and cf_tts.strip():
@@ -779,7 +786,7 @@ def _tts_language():
 
 
 def _provider_supports_language(provider):
-    """Model TTS Cloudflare yang tersedia hanya Inggris/Spanyol; Indonesia harus lewat DataByte."""
+    """Model TTS Cloudflare yang tersedia hanya Inggris/Spanyol; Indonesia harus lewat DataByte/Google."""
     if provider == 'cloudflare':
         return _tts_language() != 'id'
     return True
@@ -789,10 +796,17 @@ def _resolve_tts_provider(requested=''):
     """Provider efektif. Teks Indonesia diarahkan ke gateway ber-voice Indonesia bila tersedia."""
     explicit = bool(str(requested or '').strip())
     provider = str(requested or TTS_PROVIDER or 'cloudflare').strip().lower()
-    if provider not in ('cloudflare', 'databyte'):
+    if provider not in ('cloudflare', 'databyte', 'google'):
         provider = 'cloudflare'
-    if not _provider_supports_language(provider) and _databyte_tts_ready():
-        return 'databyte'
+    if provider == 'google' and _google_tts_configured():
+        return 'google'
+    if not _provider_supports_language(provider):
+        # Cloudflare Aura/MeloTTS tidak punya voice Indonesia. Google Translate TTS sudah
+        # terbukti berfungsi (gratis, voice id), jadi didahulukan sebelum gateway DataByte.
+        if _google_tts_configured():
+            return 'google'
+        if _databyte_tts_ready():
+            return 'databyte'
     if not explicit:
         if provider == 'cloudflare' and not _cloudflare_tts_configured() and _databyte_tts_ready():
             return 'databyte'
@@ -812,6 +826,8 @@ def _tts_display():
     if provider == 'cloudflare':
         model, voice = _normalize_cloudflare_tts(TTS_CLOUDFLARE_MODEL, TTS_CLOUDFLARE_VOICE)
         parts = ['Cloudflare Workers AI', model, voice]
+    elif provider == 'google':
+        parts = ['Google Translate TTS', _google_tts_lang(_tts_language())]
     else:
         parts = ['DataByte', TTS_MODEL, DEFAULT_TTS_SPEAKER]
     return provider, ' · '.join([p for p in parts if p])
@@ -1016,6 +1032,13 @@ def _sniff_audio_mime(data):
 # Daftar voice Aura dari Cloudflare; voice lain (mis. Kore milik Gemini) ditolak 400 oleh upstream.
 AURA_VOICES = ('angus', 'asteria', 'arcas', 'orion', 'orpheus', 'athena', 'luna', 'zeus', 'perseus', 'helios', 'hera', 'stella')
 MELOTTS_LANGS = ('en', 'es', 'fr', 'jp', 'kr', 'zh')
+# Model TTS partner Google (Gemini) di Cloudflare memakai daftar voice sendiri, bukan voice Aura.
+GEMINI_TTS_VOICES = (
+    'zephyr', 'puck', 'charon', 'kore', 'fenrir', 'leda', 'orus', 'aoede', 'callirrhoe', 'autonoe',
+    'enceladus', 'iapetus', 'umbriel', 'algieba', 'despina', 'erinome', 'algenib', 'rasalgethi',
+    'laomedeia', 'achernar', 'alnilam', 'schedar', 'gacrux', 'pulcherrima', 'achird',
+    'zubenelgenubi', 'vindemiatrix', 'sadachbia', 'sadaltager', 'sulafat',
+)
 CLOUDFLARE_TTS_LANG = str(os.environ.get('CLOUDFLARE_LANG') or 'en').strip().lower()
 
 
@@ -1040,15 +1063,91 @@ def _cloudflare_tts_payload(text, voice, model):
     return _json.dumps(body).encode('utf-8')
 
 
-def _normalize_cloudflare_tts(model, voice=''):
-    """Pastikan model TTS Cloudflare berupa model Workers AI native (@cf/*) dan voice cocok.
+def _google_tts_configured():
+    return bool(TTS_GOOGLE_ENABLED)
 
-    Dashboard menyimpan model TTS aktif pada satu field (ttsModel) sehingga model provider lain
-    seperti google/gemini-3.8-flash-tts bisa masuk ke sini; Cloudflare menolaknya 400
-    "Invalid value at voice", lalu pengguna hanya melihat halaman 502 dari edge.
+
+def _google_tts_lang(lang=''):
+    """Kode bahasa 2 huruf untuk Google TTS (id, en, ...)."""
+    code = str(lang or _tts_language() or 'id').strip().lower().replace('_', '-')
+    return code.split('-')[0] or 'id'
+
+
+def _split_tts_text(text, limit=180):
+    """Pecah teks per kalimat <= limit karakter (Google TTS menolak teks panjang)."""
+    text = re.sub(r'\s+', ' ', str(text or '')).strip()
+    if not text:
+        return []
+    parts, buf = [], ''
+    for piece in re.split(r'(?<=[.!?;:])\s+', text):
+        piece = piece.strip()
+        while len(piece) > limit:
+            cut = piece.rfind(' ', 0, limit)
+            cut = cut if cut > 0 else limit
+            if buf:
+                parts.append(buf)
+                buf = ''
+            parts.append(piece[:cut].strip())
+            piece = piece[cut:].strip()
+        if not piece:
+            continue
+        if buf and len(buf) + 1 + len(piece) > limit:
+            parts.append(buf)
+            buf = piece
+        else:
+            buf = (buf + ' ' + piece).strip()
+    if buf:
+        parts.append(buf)
+    return [p for p in parts if p]
+
+
+def _gtranslate_tts(text, lang='id'):
+    """Google Translate TTS: gratis, tanpa API key, mendukung bahasa Indonesia.
+
+    Endpoint membatasi ±200 karakter per request, jadi teks dipecah lalu MP3-nya disambung
+    (MP3 berurutan diputar normal oleh browser dan pemutar audio).
+    """
+    if not _google_tts_configured():
+        raise RuntimeError('google_tts_not_configured')
+    tl = _google_tts_lang(lang)
+    chunks = _split_tts_text(text)
+    if not chunks:
+        raise ValueError('Google TTS: teks kosong')
+    audio = bytearray()
+    for chunk in chunks:
+        url = ('https://translate.google.com/translate_tts?ie=UTF-8'
+               f'&q={urllib.parse.quote(chunk)}&tl={tl}&client=tw-ob&ttsspeed=1')
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+            'Accept': 'audio/mpeg,audio/*;q=0.9,*/*;q=0.5',
+            'Referer': 'https://translate.google.com/',
+        })
+        with urllib.request.urlopen(req, timeout=max(5, float(TTS_TIMEOUT or 30))) as resp:
+            part = resp.read()
+        if not part:
+            raise ValueError('Google TTS mengembalikan audio kosong')
+        audio.extend(part)
+    mimetype, ext = _sniff_audio_mime(bytes(audio[:16]))
+    return bytes(audio), mimetype, ext
+
+
+def _is_gemini_tts_model(model):
+    m = str(model or '').strip().lower()
+    return m.startswith('google/') or ('gemini' in m and 'tts' in m)
+
+
+def _normalize_cloudflare_tts(model, voice=''):
+    """Pastikan model TTS Cloudflare valid dan voice-nya cocok dengan jenis model.
+
+    Model partner Google (mis. google/gemini-3.8-flash-tts) memakai voice Gemini (Kore, Puck, ...),
+    sedangkan Aura memakai voice Aura. Mencampur keduanya membuat upstream menolak 400
+    "Invalid value at voice", lalu pengguna hanya melihat halaman 502 dari edge Cloudflare.
     """
     default_model = str(TTS_CLOUDFLARE_MODEL or '').strip()
     model = str(model or '').strip()
+    if _is_gemini_tts_model(model):
+        gem = str(voice or '').strip().lower() or 'kore'
+        return model, (gem if gem in GEMINI_TTS_VOICES else 'kore').capitalize()
     if not model.startswith('@cf/'):
         model = default_model if default_model.startswith('@cf/') else '@cf/deepgram/aura-1'
     voice = str(voice or '').strip().lower()
@@ -1153,12 +1252,16 @@ def tts():
         return jsonify({'error': 'TTS Cloudflare belum dikonfigurasi (account/token/run URL/model dari dashboard).'}), 503
     if provider == 'databyte' and not _databyte_tts_ready():
         return jsonify({'error': 'TTS remote gateway belum dikonfigurasi (TTS_API_URL/TTS_API_KEY).'}), 503
+    if provider == 'google' and not _google_tts_configured():
+        return jsonify({'error': 'TTS Google dinonaktifkan (TTS_GOOGLE_ENABLED=0).'}), 503
 
     requested_voice = str(data.get('voice') or data.get('speaker') or '').strip()
     voice = requested_voice or (TTS_CLOUDFLARE_VOICE if provider == 'cloudflare' else DEFAULT_TTS_SPEAKER)
     model = str(data.get('model') or (TTS_CLOUDFLARE_MODEL if provider == 'cloudflare' else TTS_MODEL) or '').strip()
     if provider == 'cloudflare':
         model, voice = _normalize_cloudflare_tts(model, voice)
+    elif provider == 'google':
+        model, voice = 'google-translate-tts', _google_tts_lang(_tts_language())
     wants_json = _wants_json_audio()
     probe = bool(data.get('probe') or request.args.get('probe'))
     started_at = time.time()
@@ -1185,7 +1288,19 @@ def tts():
 
     try:
         if provider == 'cloudflare':
-            audio_bytes, mimetype, ext = _cloudflare_tts(text, voice, model)
+            try:
+                audio_bytes, mimetype, ext = _cloudflare_tts(text, voice, model)
+            except (HTTPError, URLError, ValueError) as cf_err:
+                # Model partner Google di akun ini masih membalas 500 "Model execution failed"
+                # dari sisi Google. Agar suara tetap keluar, jatuh ke Google TTS yang berfungsi.
+                if not (_is_gemini_tts_model(model) and _google_tts_configured()):
+                    raise
+                print('[tts] gemini model failed, using google translate tts',
+                      {'model': model, 'voice': voice, 'err': repr(cf_err)[:160]}, flush=True)
+                audio_bytes, mimetype, ext = _gtranslate_tts(text, _tts_language())
+                model, voice = 'google-translate-tts', _google_tts_lang(_tts_language())
+        elif provider == 'google':
+            audio_bytes, mimetype, ext = _gtranslate_tts(text, _tts_language())
         else:
             audio_bytes, mimetype, ext = _databyte_tts(text, voice, model)
         _tts_diag('ok', provider=provider, model=model, voice=voice, nbytes=len(audio_bytes), ms=int((time.time() - started_at) * 1000))
@@ -1210,9 +1325,13 @@ def tts():
             err_body = e.read().decode('utf-8', errors='ignore')[:1600]
         except Exception:
             pass
-        source_url = _cloudflare_tts_url(model) if provider == 'cloudflare' else TTS_API_URL
+        source_url = (_cloudflare_tts_url(model) if provider == 'cloudflare'
+                      else ('https://translate.google.com/translate_tts' if provider == 'google' else TTS_API_URL))
         waf_block = e.code == 403 and ('cloudflare' in (err_body or '').lower() or 'access denied' in (err_body or '').lower())
-        if provider == 'cloudflare':
+        if provider == 'google':
+            hint = ('Google Translate TTS menolak request (biasanya 429/403 karena rate limit atau IP server diblokir). '
+                    'Coba lagi beberapa saat; bila tetap gagal, gunakan provider TTS lain.')
+        elif provider == 'cloudflare':
             hint = 'Periksa CLOUDFLARE_API_TOKEN, account ID, dan model TTS Cloudflare di dashboard (401/403).' if e.code in (401, 403) else None
         elif e.code == 402 or 'insufficient_balance' in (err_body or ''):
             hint = ('Saldo gateway DataByte habis (402 insufficient_balance). Top-up AI Gateway DataByte, '
