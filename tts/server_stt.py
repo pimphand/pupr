@@ -544,8 +544,11 @@ def apply_dashboard_ai_config(cfg):
         cf_tts = cfg.get('ttsCloudflareModel')
         if isinstance(cf_tts, str) and cf_tts.strip():
             TTS_CLOUDFLARE_MODEL = cf_tts.strip()[:120]
-        elif TTS_PROVIDER == 'cloudflare' and isinstance(cfg.get('ttsModel'), str) and cfg.get('ttsModel').strip():
-            # Dashboard memakai satu field ttsModel untuk provider yang sedang aktif.
+        elif (TTS_PROVIDER == 'cloudflare' and isinstance(cfg.get('ttsModel'), str)
+              and cfg.get('ttsModel').strip().startswith('@cf/')):
+            # Dashboard memakai satu field ttsModel untuk provider yang sedang aktif. Hanya model
+            # Workers AI native (@cf/...) yang valid; model provider lain (mis. google/gemini-tts)
+            # akan ditolak Cloudflare 400 "Invalid value at voice" bila dipakai di sini.
             TTS_CLOUDFLARE_MODEL = cfg.get('ttsModel').strip()[:120]
         cf_voice = cfg.get('ttsCloudflareVoice')
         if isinstance(cf_voice, str) and cf_voice.strip():
@@ -807,7 +810,8 @@ def _tts_display():
     """Info TTS aktif untuk halaman uji (tanpa secret)."""
     provider = _effective_tts_provider()
     if provider == 'cloudflare':
-        parts = ['Cloudflare Workers AI', TTS_CLOUDFLARE_MODEL, TTS_CLOUDFLARE_VOICE]
+        model, voice = _normalize_cloudflare_tts(TTS_CLOUDFLARE_MODEL, TTS_CLOUDFLARE_VOICE)
+        parts = ['Cloudflare Workers AI', model, voice]
     else:
         parts = ['DataByte', TTS_MODEL, DEFAULT_TTS_SPEAKER]
     return provider, ' · '.join([p for p in parts if p])
@@ -1036,6 +1040,25 @@ def _cloudflare_tts_payload(text, voice, model):
     return _json.dumps(body).encode('utf-8')
 
 
+def _normalize_cloudflare_tts(model, voice=''):
+    """Pastikan model TTS Cloudflare berupa model Workers AI native (@cf/*) dan voice cocok.
+
+    Dashboard menyimpan model TTS aktif pada satu field (ttsModel) sehingga model provider lain
+    seperti google/gemini-3.8-flash-tts bisa masuk ke sini; Cloudflare menolaknya 400
+    "Invalid value at voice", lalu pengguna hanya melihat halaman 502 dari edge.
+    """
+    default_model = str(TTS_CLOUDFLARE_MODEL or '').strip()
+    model = str(model or '').strip()
+    if not model.startswith('@cf/'):
+        model = default_model if default_model.startswith('@cf/') else '@cf/deepgram/aura-1'
+    voice = str(voice or '').strip().lower()
+    if 'melotts' in model:
+        return model, ''
+    if 'aura' in model:
+        return model, (voice if voice in AURA_VOICES else 'asteria')
+    return model, voice
+
+
 def _cloudflare_tts(text, voice='', model=''):
     """TTS Cloudflare Workers AI. Model @cf/* lewat path per-model, model partner lewat {model, input}."""
     if not _cloudflare_tts_configured():
@@ -1134,6 +1157,8 @@ def tts():
     requested_voice = str(data.get('voice') or data.get('speaker') or '').strip()
     voice = requested_voice or (TTS_CLOUDFLARE_VOICE if provider == 'cloudflare' else DEFAULT_TTS_SPEAKER)
     model = str(data.get('model') or (TTS_CLOUDFLARE_MODEL if provider == 'cloudflare' else TTS_MODEL) or '').strip()
+    if provider == 'cloudflare':
+        model, voice = _normalize_cloudflare_tts(model, voice)
     wants_json = _wants_json_audio()
     probe = bool(data.get('probe') or request.args.get('probe'))
     started_at = time.time()
@@ -1203,19 +1228,22 @@ def tts():
         else:
             hint = None
         print('[tts] gateway HTTP error', {'provider': provider, 'voice': voice, 'model': model, 'status': e.code, 'url': _redact_tts_key(source_url), 'waf_block': waf_block, 'detail_preview': (err_body or '')[:180]}, flush=True)
-        status = 502 if e.code >= 500 else (503 if e.code in (401, 402, 403) else 502)
+        # Cloudflare mengganti respons 502 dari origin dengan halaman errornya sendiri
+        # ("invalid or incomplete response"), jadi kegagalan upstream dikirim sebagai 503
+        # supaya detail asli tetap sampai ke pengguna.
+        status = 503
         _tts_diag('error', provider=provider, model=model, voice=voice, http_status=e.code, ms=int((time.time() - started_at) * 1000), error=err_body or str(e))
-        out = {'error': 'TTS gateway request failed', 'provider': provider, 'detail': _short_upstream_text(err_body or str(e)), 'http_status': e.code, 'voice': voice, 'model': model}
+        out = {'ok': False, 'error': 'TTS gateway request failed', 'provider': provider, 'detail': _short_upstream_text(err_body or str(e)), 'http_status': e.code, 'voice': voice, 'model': model}
         if hint: out['hint'] = hint
         return jsonify(out), status
     except ValueError as e:
         print('[tts] non-audio response', {'provider': provider, 'model': model, 'err': str(e)[:180]}, flush=True)
         _tts_diag('non_audio', provider=provider, model=model, voice=voice, ms=int((time.time() - started_at) * 1000), error=str(e))
-        return jsonify({'error': 'TTS response tidak berisi audio', 'provider': provider, 'detail': _short_upstream_text(e), 'voice': voice, 'model': model}), 502
+        return jsonify({'ok': False, 'error': 'TTS response tidak berisi audio', 'provider': provider, 'detail': _short_upstream_text(e), 'voice': voice, 'model': model}), 503
     except (URLError, Exception) as e:
         print('[tts] gateway exception', {'provider': provider, 'voice': voice, 'model': model, 'err': repr(e)}, flush=True)
         _tts_diag('exception', provider=provider, model=model, voice=voice, ms=int((time.time() - started_at) * 1000), error=repr(e))
-        return jsonify({'error': 'TTS gateway request failed', 'provider': provider, 'detail': repr(e)[:800], 'voice': voice, 'model': model}), 502
+        return jsonify({'ok': False, 'error': 'TTS gateway request failed', 'provider': provider, 'detail': repr(e)[:800], 'voice': voice, 'model': model}), 503
 
 # Container/proxy deployment (mis. Docker) tidak datang dari 127.0.0.1 walau port-nya hanya
 # di-publish ke loopback host. Aktifkan PUPR_ALLOW_REMOTE_API=1 untuk tetap mengizinkan
