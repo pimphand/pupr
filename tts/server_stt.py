@@ -359,6 +359,15 @@ TTS_TIMEOUT = float(os.environ.get('TTS_TIMEOUT') or _tts_cfg.get('timeoutSecond
 # Provider TTS Google (Google Translate TTS): gratis, tanpa API key, punya voice bahasa Indonesia.
 # Set TTS_PROVIDER=google (atau ttsProvider=google di dashboard) untuk memakainya.
 TTS_GOOGLE_ENABLED = str(os.environ.get('TTS_GOOGLE_ENABLED') or _tts_cfg.get('googleEnabled') or '1').strip().lower() not in ('0', 'false', 'no', 'off')
+# Provider TTS Microsoft Edge (neural): gratis, tanpa API key, dan satu-satunya jalur yang punya
+# voice bahasa Indonesia LAKI-LAKI (id-ID-ArdiNeural). Google Translate TTS hanya voice perempuan.
+TTS_EDGE_ENABLED = str(os.environ.get('TTS_EDGE_ENABLED') or _tts_cfg.get('edgeEnabled') or '1').strip().lower() not in ('0', 'false', 'no', 'off')
+TTS_EDGE_VOICE = str(os.environ.get('TTS_EDGE_VOICE') or _tts_cfg.get('edgeVoice') or 'id-ID-ArdiNeural').strip()
+# Voice Edge per bahasa: male = laki-laki, female = perempuan.
+EDGE_TTS_GENDER_VOICES = {
+    'id': {'male': 'id-ID-ArdiNeural', 'female': 'id-ID-GadisNeural'},
+    'en': {'male': 'en-US-GuyNeural', 'female': 'en-US-AriaNeural'},
+}
 # Cloudflare Workers AI fallback. URL, model, dan key WAJIB berasal dari dashboard DB.
 # Tidak ada default hardcoded: bila public.pupr_cloudflare_provider belum diisi, fallback dinonaktifkan.
 # Account/token boleh dari .env (fallback operasional TTS); URL & model LLM tetap hanya dari dashboard.
@@ -545,7 +554,7 @@ def apply_dashboard_ai_config(cfg):
         # TTS_PROVIDER=google di env sengaja diprioritaskan supaya jalur gratis bisa dinyalakan
         # tanpa mengubah setelan dashboard.
         env_provider = (os.environ.get('TTS_PROVIDER') or '').strip().lower()
-        if (isinstance(prov, str) and prov.strip().lower() in ('cloudflare', 'databyte', 'google')
+        if (isinstance(prov, str) and prov.strip().lower() in ('cloudflare', 'databyte', 'google', 'edge')
                 and env_provider != 'google'):
             TTS_PROVIDER = prov.strip().lower()
         cf_tts = cfg.get('ttsCloudflareModel')
@@ -785,8 +794,26 @@ def _tts_language():
     return lang
 
 
+def _edge_tts_configured():
+    return bool(TTS_EDGE_ENABLED)
+
+
+def _edge_tts_voice(voice='', lang=''):
+    """Voice Edge: terima nama voice penuh (id-ID-ArdiNeural) atau gender (male/female)."""
+    lang = (lang or _tts_language()).strip().lower()[:2] or 'id'
+    table = EDGE_TTS_GENDER_VOICES.get(lang) or EDGE_TTS_GENDER_VOICES['id']
+    raw = str(voice or TTS_EDGE_VOICE or '').strip()
+    low = raw.lower()
+    if 'neural' in low:
+        # Voice eksplisit hanya dipakai bila bahasanya cocok (id-ID-* untuk id, en-US-* untuk en).
+        return raw if low.startswith(lang + '-') else table['male']
+    if low in ('f', 'female', 'perempuan', 'wanita', 'gadis', 'cewek', 'putri'):
+        return table['female']
+    return table['male']
+
+
 def _provider_supports_language(provider):
-    """Model TTS Cloudflare yang tersedia hanya Inggris/Spanyol; Indonesia harus lewat DataByte/Google."""
+    """Cloudflare Aura/MeloTTS belum punya voice Indonesia; Edge & Google punya."""
     if provider == 'cloudflare':
         return _tts_language() != 'id'
     return True
@@ -796,13 +823,17 @@ def _resolve_tts_provider(requested=''):
     """Provider efektif. Teks Indonesia diarahkan ke gateway ber-voice Indonesia bila tersedia."""
     explicit = bool(str(requested or '').strip())
     provider = str(requested or TTS_PROVIDER or 'cloudflare').strip().lower()
-    if provider not in ('cloudflare', 'databyte', 'google'):
+    if provider not in ('cloudflare', 'databyte', 'google', 'edge'):
         provider = 'cloudflare'
     if provider == 'google' and _google_tts_configured():
         return 'google'
+    if provider == 'edge':
+        return 'edge' if _edge_tts_configured() else 'cloudflare'
     if not _provider_supports_language(provider):
-        # Cloudflare Aura/MeloTTS tidak punya voice Indonesia. Google Translate TTS sudah
-        # terbukti berfungsi (gratis, voice id), jadi didahulukan sebelum gateway DataByte.
+        # Cloudflare Aura/MeloTTS tidak punya voice Indonesia. Edge didahulukan karena punya
+        # voice Indonesia laki-laki (Ardi); Google Translate TTS hanya voice perempuan.
+        if _edge_tts_configured():
+            return 'edge'
         if _google_tts_configured():
             return 'google'
         if _databyte_tts_ready():
@@ -828,6 +859,8 @@ def _tts_display():
         parts = ['Cloudflare Workers AI', model, voice]
     elif provider == 'google':
         parts = ['Google Translate TTS', _google_tts_lang(_tts_language())]
+    elif provider == 'edge':
+        parts = ['Microsoft Edge Neural', _edge_tts_voice(), _tts_language()]
     else:
         parts = ['DataByte', TTS_MODEL, DEFAULT_TTS_SPEAKER]
     return provider, ' · '.join([p for p in parts if p])
@@ -1131,6 +1164,34 @@ def _gtranslate_tts(text, lang='id'):
     return bytes(audio), mimetype, ext
 
 
+def _edge_tts(text, voice=''):
+    """Microsoft Edge neural TTS: gratis, tanpa API key, punya voice Indonesia laki-laki."""
+    if not _edge_tts_configured():
+        raise RuntimeError('edge_tts_disabled')
+    try:
+        import asyncio
+        import edge_tts as _edge
+    except Exception as e:
+        raise RuntimeError('edge_tts_not_installed: ' + repr(e))
+    text = (text or '').strip()
+    if not text:
+        raise ValueError('Edge TTS: teks kosong')
+    chosen = _edge_tts_voice(voice)
+
+    async def _synth():
+        buf = bytearray()
+        async for chunk in _edge.Communicate(text, chosen).stream():
+            if chunk.get('type') == 'audio':
+                buf.extend(chunk['data'])
+        return bytes(buf)
+
+    audio = asyncio.run(_synth())
+    if not audio:
+        raise ValueError('Edge TTS mengembalikan audio kosong')
+    mimetype, ext = _sniff_audio_mime(audio[:16])
+    return audio, mimetype, ext
+
+
 def _is_gemini_tts_model(model):
     m = str(model or '').strip().lower()
     return m.startswith('google/') or ('gemini' in m and 'tts' in m)
@@ -1254,6 +1315,8 @@ def tts():
         return jsonify({'error': 'TTS remote gateway belum dikonfigurasi (TTS_API_URL/TTS_API_KEY).'}), 503
     if provider == 'google' and not _google_tts_configured():
         return jsonify({'error': 'TTS Google dinonaktifkan (TTS_GOOGLE_ENABLED=0).'}), 503
+    if provider == 'edge' and not _edge_tts_configured():
+        return jsonify({'error': 'TTS Edge dinonaktifkan (TTS_EDGE_ENABLED=0).'}), 503
 
     requested_voice = str(data.get('voice') or data.get('speaker') or '').strip()
     voice = requested_voice or (TTS_CLOUDFLARE_VOICE if provider == 'cloudflare' else DEFAULT_TTS_SPEAKER)
@@ -1262,6 +1325,8 @@ def tts():
         model, voice = _normalize_cloudflare_tts(model, voice)
     elif provider == 'google':
         model, voice = 'google-translate-tts', _google_tts_lang(_tts_language())
+    elif provider == 'edge':
+        model, voice = 'edge-neural-tts', _edge_tts_voice(voice)
     wants_json = _wants_json_audio()
     probe = bool(data.get('probe') or request.args.get('probe'))
     started_at = time.time()
@@ -1301,6 +1366,16 @@ def tts():
                 model, voice = 'google-translate-tts', _google_tts_lang(_tts_language())
         elif provider == 'google':
             audio_bytes, mimetype, ext = _gtranslate_tts(text, _tts_language())
+        elif provider == 'edge':
+            try:
+                audio_bytes, mimetype, ext = _edge_tts(text, voice)
+            except Exception as edge_err:
+                if not _google_tts_configured():
+                    raise
+                print('[tts] edge failed, using google translate tts',
+                      {'voice': voice, 'err': repr(edge_err)[:160]}, flush=True)
+                audio_bytes, mimetype, ext = _gtranslate_tts(text, _tts_language())
+                model, voice = 'google-translate-tts', _google_tts_lang(_tts_language())
         else:
             audio_bytes, mimetype, ext = _databyte_tts(text, voice, model)
         _tts_diag('ok', provider=provider, model=model, voice=voice, nbytes=len(audio_bytes), ms=int((time.time() - started_at) * 1000))
@@ -1326,9 +1401,13 @@ def tts():
         except Exception:
             pass
         source_url = (_cloudflare_tts_url(model) if provider == 'cloudflare'
-                      else ('https://translate.google.com/translate_tts' if provider == 'google' else TTS_API_URL))
+                      else ('https://translate.google.com/translate_tts' if provider == 'google'
+                            else ('wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1' if provider == 'edge' else TTS_API_URL)))
         waf_block = e.code == 403 and ('cloudflare' in (err_body or '').lower() or 'access denied' in (err_body or '').lower())
-        if provider == 'google':
+        if provider == 'edge':
+            hint = ('Microsoft Edge TTS gagal (biasanya koneksi ke speech.platform.bing.com diblokir jaringan server). '
+                    'Pastikan paket edge-tts terpasang dan izinkan HTTPS keluar; Google Translate TTS dipakai otomatis bila TTS_GOOGLE_ENABLED=1.')
+        elif provider == 'google':
             hint = ('Google Translate TTS menolak request (biasanya 429/403 karena rate limit atau IP server diblokir). '
                     'Coba lagi beberapa saat; bila tetap gagal, gunakan provider TTS lain.')
         elif provider == 'cloudflare':
